@@ -19,30 +19,30 @@
 #include <spdlog/details/log_msg.h>
 
 #ifdef SPDLOG_WCHAR_TO_UTF8_SUPPORT
-    #ifndef _WIN32
-        #error SPDLOG_WCHAR_TO_UTF8_SUPPORT only supported on windows
-    #endif
-    #include <spdlog/details/os.h>
+#ifndef _WIN32
+#error SPDLOG_WCHAR_TO_UTF8_SUPPORT only supported on windows
+#endif
+#include <spdlog/details/os.h>
 #endif
 
 #include <vector>
 
 #ifndef SPDLOG_NO_EXCEPTIONS
-    #define SPDLOG_LOGGER_CATCH(location)                                                 \
-        catch (const std::exception &ex) {                                                \
-            if (location.filename) {                                                      \
-                err_handler_(fmt_lib::format(SPDLOG_FMT_STRING("{} [{}({})]"), ex.what(), \
-                                             location.filename, location.line));          \
-            } else {                                                                      \
-                err_handler_(ex.what());                                                  \
-            }                                                                             \
-        }                                                                                 \
-        catch (...) {                                                                     \
-            err_handler_("Rethrowing unknown exception in logger");                       \
-            throw;                                                                        \
-        }
+#define SPDLOG_LOGGER_CATCH(location)                                                 \
+    catch (const std::exception &ex) {                                                \
+        if (location.filename) {                                                      \
+            err_handler_(fmt_lib::format(SPDLOG_FMT_STRING("{} [{}({})]"), ex.what(), \
+                                         location.filename, location.line));          \
+        } else {                                                                      \
+            err_handler_(ex.what());                                                  \
+        }                                                                             \
+    }                                                                                 \
+    catch (...) {                                                                     \
+        err_handler_("Rethrowing unknown exception in logger");                       \
+        throw;                                                                        \
+    }
 #else
-    #define SPDLOG_LOGGER_CATCH(location)
+#define SPDLOG_LOGGER_CATCH(location)
 #endif
 
 namespace spdlog {
@@ -77,7 +77,11 @@ public:
 
     template <typename... Args>
     void log(source_loc loc, level::level_enum lvl, format_string_t<Args...> fmt, Args &&...args) {
-        log_(loc, lvl, details::to_string_view(fmt), std::forward<Args>(args)...);
+#if defined(SPDLOG_USE_STD_FORMAT) && __cpp_lib_format < 202207L
+        log_(loc, lvl, fmt, std::forward<Args>(args)...);
+#else
+        log_(loc, lvl, fmt.get(), std::forward<Args>(args)...);
+#endif
     }
 
     template <typename... Args>
@@ -158,7 +162,11 @@ public:
 #ifdef SPDLOG_WCHAR_TO_UTF8_SUPPORT
     template <typename... Args>
     void log(source_loc loc, level::level_enum lvl, wformat_string_t<Args...> fmt, Args &&...args) {
-        log_(loc, lvl, details::to_string_view(fmt), std::forward<Args>(args)...);
+#if defined(SPDLOG_USE_STD_FORMAT) && __cpp_lib_format < 202207L
+        log_(loc, lvl, fmt, std::forward<Args>(args)...);
+#else
+        log_(loc, lvl, fmt.get(), std::forward<Args>(args)...);
+#endif
     }
 
     template <typename... Args>
@@ -258,7 +266,7 @@ public:
         log(level::critical, msg);
     }
 
-    // return true logging is enabled for the given level.
+    // return true if logging is enabled for the given level.
     bool should_log(level::level_enum msg_level) const {
         return msg_level >= level_.load(std::memory_order_relaxed);
     }
@@ -375,5 +383,5 @@ void swap(logger &a, logger &b) noexcept;
 }  // namespace spdlog
 
 #ifdef SPDLOG_HEADER_ONLY
-    #include "logger-inl.h"
+#include "logger-inl.h"
 #endif

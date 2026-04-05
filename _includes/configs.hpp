@@ -1,114 +1,154 @@
 #pragma once
 
-#include <vector>
-#include <filesystem>
-#include <unordered_map>
-#include <unistd.h>
+#include <string>           // std::string
+#include <string_view>      // std::string_view
+#include <unordered_map>    // std::unordered_map
+#include <vector>           // std::vector, std::pair
+#include <filesystem>       // std::filesystem
+#include <fstream>          // std::ifstream
+#include <optional>         // std::optional, std::nullopt
+
+#if defined(_WIN32)
+#include <windows.h>        // Windows API
+#elif defined(__linux__)
+#include <unistd.h>         // POSIX API
+#include <linux/limits.h>   // PATH_MAX
+#endif
 
 #include <logs.hpp>
 
+// 获取当前可执行文件所在目录
+inline std::filesystem::path getExecutableDir() {
+#if defined(_WIN32)
+    wchar_t buffer[MAX_PATH + 1];
+    DWORD len = GetModuleFileNameW(NULL, buffer, MAX_PATH);
+    buffer[len] = L'\0';
+    return std::filesystem::path(buffer).parent_path();
+#elif defined(__linux__)
+    char buffer[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (len != -1) {
+        buffer[len] = '\0';
+        return std::filesystem::path(buffer).parent_path();
+    }
+    return std::filesystem::current_path();
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
 namespace SimpleYAML {
 
-    // 最小 YAML 解析器，仅支持 key: value 和 - [k, v] 数组
     class Node {
     public:
         std::unordered_map<std::string, std::string> scalars;
         std::vector<std::pair<std::string, std::string>> additionalTools;
 
-        bool parse(const std::string& content) {
-            std::istringstream iss(content);
-            std::string line;
-            while (std::getline(iss, line)) {
-                trim(line);
-                if (line.empty() || line[0] == '#') continue;
+        // 传入 string_view 避免拷贝，内部按行切割
+        bool parse(std::string_view content) {
+            size_t start = 0;
+            while (start < content.size()) {
+                // 手动寻找换行符，比 std::getline(stringstream) 性能更高，无内存分配
+                size_t end = content.find('\n', start);
+                if (end == std::string_view::npos) end = content.size();
 
-                if (line[0] == '-') {
+                std::string_view line = content.substr(start, end - start);
+                start = end + 1; // 移动到下一行
+
+                // 剔除注释
+                if (auto hash_pos = line.find('#'); hash_pos != std::string_view::npos) {
+                    line = line.substr(0, hash_pos);
+                }
+
+                line = trim(line);
+                if (line.empty()) continue;
+
+                // 解析 - [k, v] 格式的数组
+                if (line.front() == '-') {
                     auto pos1 = line.find('[');
                     auto pos2 = line.find(']');
-                    if (pos1 != std::string::npos && pos2 != std::string::npos && pos2 > pos1) {
+                    if (pos1 != std::string_view::npos && pos2 != std::string_view::npos && pos2 > pos1) {
                         auto pairStr = line.substr(pos1 + 1, pos2 - pos1 - 1);
                         auto comma = pairStr.find(',');
-                        if (comma != std::string::npos) {
-                            std::string k = pairStr.substr(0, comma);
-                            std::string v = pairStr.substr(comma + 1);
-                            trim(k); trim(v);
-                            stripQuotes(k); stripQuotes(v);
-                            additionalTools.emplace_back(k, v);
+                        if (comma != std::string_view::npos) {
+                            // 使用 string_view 裁剪并去引号
+                            std::string_view k = stripQuotes(trim(pairStr.substr(0, comma)));
+                            std::string_view v = stripQuotes(trim(pairStr.substr(comma + 1)));
+                            // 仅在此处存入 vector 时发生拷贝
+                            additionalTools.emplace_back(std::string(k), std::string(v));
                         }
                     }
-                } else {
+                }
+                // 解析 key: value 格式
+                else {
                     auto colon = line.find(':');
-                    if (colon != std::string::npos) {
-                        std::string key = line.substr(0, colon);
-                        std::string value = line.substr(colon + 1);
-                        trim(key); trim(value);
-                        stripQuotes(value);
-                        scalars[key] = value;
+                    if (colon != std::string_view::npos) {
+                        std::string_view key_view = trim(line.substr(0, colon));
+                        std::string_view val_view = stripQuotes(trim(line.substr(colon + 1)));
+                        if (!key_view.empty()) {
+                            scalars[std::string(key_view)] = std::string(val_view);
+                        }
                     }
                 }
             }
             return true;
         }
 
+        // 安全检查
+        std::optional<std::string> get_opt(std::string_view key) const {
+            if (auto it = scalars.find(std::string(key)); it != scalars.end()) {
+                return it->second;
+            }
+            return std::nullopt;
+        }
+
+        // 兼容你原有代码的旧接口
         std::string get(const std::string& key, const std::string& def = "") const {
-            auto it = scalars.find(key);
-            return it != scalars.end() ? it->second : def;
+            auto val = get_opt(key);
+            return val.has_value() ? *val : def;
         }
 
         double getDouble(const std::string& key, double def) const {
-            try { return std::stod(get(key)); }
+            auto val = get_opt(key);
+            if (!val.has_value() || val->empty()) return def;
+            try { return std::stod(*val); }
             catch (...) { return def; }
         }
 
         short getShort(const std::string& key, short def) const {
-            try { return static_cast<short>(std::stoi(get(key))); }
+            auto val = get_opt(key);
+            if (!val.has_value() || val->empty()) return def;
+            try { return static_cast<short>(std::stoi(*val)); }
             catch (...) { return def; }
         }
 
     private:
-        static void trim(std::string& s) {
+        static constexpr std::string_view trim(std::string_view s) {
             size_t start = s.find_first_not_of(" \t\r\n");
+            if (start == std::string_view::npos) return {};
+            s.remove_prefix(start);
             size_t end = s.find_last_not_of(" \t\r\n");
-            if (start == std::string::npos) s = "";
-            else s = s.substr(start, end - start + 1);
+            if (end != std::string_view::npos) s.remove_suffix(s.size() - end - 1);
+            return s;
         }
 
-        static void stripQuotes(std::string& s) {
-            if ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\''))
-                s = s.substr(1, s.size() - 2);
+        static constexpr std::string_view stripQuotes(std::string_view s) {
+            if (s.size() >= 2) {
+                if ((s.starts_with('"') && s.ends_with('"')) ||
+                    (s.starts_with('\'') && s.ends_with('\''))) {
+                    s.remove_prefix(1);
+                    s.remove_suffix(1);
+                }
+            }
+            return s;
         }
     };
 
 } // namespace SimpleYAML
 
-inline std::filesystem::path getExecutableDir() {
-#if defined(_WIN32)
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    return std::filesystem::path(buffer).parent_path();
-#elif defined(__APPLE__)
-    char buffer[4096];
-    uint32_t size = sizeof(buffer);
-    if (_NSGetExecutablePath(buffer, &size) == 0)
-        return std::filesystem::path(buffer).parent_path();
-    else
-        return std::filesystem::current_path();
-#elif defined(__linux__)
-    char buffer[4096];
-    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-    if (len != -1) {
-        buffer[len] = '\0';
-        return std::filesystem::path(buffer).parent_path();
-    } else {
-        return std::filesystem::current_path();
-    }
-#else
-    return std::filesystem::current_path();
-#endif
-}
 
 struct Config {
-    double similarityThreshold = 0.4;
+    double similarityThreshold = 0.85;
     std::string dependenciesSearchingFile = "package.json";
     std::vector<std::pair<std::string, std::string>> additionalTools = {
         {"swpp", "hexo swpp"},
@@ -130,30 +170,32 @@ struct Config {
             return;
         }
 
-        std::ifstream fin(configPath);
+        // 使用二进制模式打开以获得更快的读取速度
+        std::ifstream fin(configPath, std::ios::in | std::ios::binary);
         if (!fin) {
             spdlog::warn("配置文件 {} 无法读取，使用默认值", configPath.string());
             return;
         }
 
-        std::stringstream buffer;
-        buffer << fin.rdbuf();
+        // 一次性把文件读入 string，比使用 stringstream 快得多
+        std::string content((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+
         SimpleYAML::Node node;
-        if (!node.parse(buffer.str())) {
+        if (!node.parse(content)) {
             spdlog::error("YAML 配置文件 {} 解析失败", configPath.string());
             return;
         }
 
-
-        if (similarityThreshold > 0 || similarityThreshold < 1.0) {
-            similarityThreshold = node.getDouble("similarityThreshold", similarityThreshold);
+        // 使用兼容的接口恢复逻辑
+        double temp_threshold = node.getDouble("similarityThreshold", similarityThreshold);
+        if (temp_threshold > 0.0 && temp_threshold < 1.0) {
+            similarityThreshold = temp_threshold;
         } else {
-            spdlog::error("非法相似度阈值，保留默认值 0.4");
+            spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
         }
+
+        // 读取可能的 package.json 配置
         dependenciesSearchingFile = node.get("dependenciesSearchingFile", dependenciesSearchingFile);
-        if (!node.additionalTools.empty()) {
-            additionalTools = node.additionalTools;
-        }
 
         if (!node.additionalTools.empty()) {
             spdlog::info("加载了 {} 个扩展工具", node.additionalTools.size());

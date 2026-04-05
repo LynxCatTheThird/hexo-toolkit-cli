@@ -1,79 +1,81 @@
 #pragma once
 
-#include <vector> // 动态数组
+#include <vector>       // std::vector
+#include <string_view>  // std::string_view
+#include <algorithm>    // std::max, std::min
 
-// 函数用途：计算两个字符串之间的 Levenshtein 距离
+// 函数用途：计算两个字符串之间的 Jaro-Winkler 相似度
 // 参数：
 //   s1: 字符串1
 //   s2: 字符串2
-// 返回值：两个字符串之间的 Levenshtein 距离
-// 算法：动态规划
-int levenshteinDistance(const std::string& s1, const std::string& s2) {
-    // 初始化字符串长度
-    int len1 = s1.size();
-    int len2 = s2.size();
-    // 创建二维DP数组
-    std::vector<std::vector<int>> dp(len1 + 1, std::vector<int>(len2 + 1, 0));
+// 返回值：返回 0.0 到 1.0 之间的相似度，1.0 表示完全匹配
+inline double getJaroWinklerSimilarity(const std::string_view& s1, const std::string_view& s2) {
+    int len1 = s1.length();
+    int len2 = s2.length();
 
-    // 初始化边界条件
-    for (int i = 0; i <= len1; ++i) {
-        dp[i][0] = i;
-    }
-    for (int j = 0; j <= len2; ++j) {
-        dp[0][j] = j;
-    }
+    if (len1 == 0 && len2 == 0) return 1.0;
+    if (len1 == 0 || len2 == 0) return 0.0;
+    if (s1 == s2) return 1.0;
 
-    // 填充DP数组
-    for (int i = 1; i <= len1; ++i) {
-        for (int j = 1; j <= len2; ++j) {
-            // 根据字符是否相等更新DP数组
-            if (s1[i - 1] == s2[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1];
-            } else {
-                dp[i][j] = std::min({ dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1] }) + 1;
-            }
+    // 匹配窗口大小
+    int match_distance = std::max(len1, len2) / 2 - 1;
+
+    // 记录被匹配过的字符位置
+    std::vector<bool> s1_matches(len1, false);
+    std::vector<bool> s2_matches(len2, false);
+
+    int matches = 0;
+    for (int i = 0; i < len1; i++) {
+        int start = std::max(0, i - match_distance);
+        int end = std::min(i + match_distance + 1, len2);
+        for (int j = start; j < end; j++) {
+            if (s2_matches[j]) continue;
+            if (s1[i] != s2[j]) continue;
+            s1_matches[i] = true;
+            s2_matches[j] = true;
+            matches++;
+            break;
         }
     }
 
-    // 返回Levenshtein距离
-    return dp[len1][len2];
+    if (matches == 0) return 0.0;
+
+    // 计算换位次数 (Transpositions)
+    int t = 0;
+    int k = 0;
+    for (int i = 0; i < len1; i++) {
+        if (!s1_matches[i]) continue;
+        while (!s2_matches[k]) k++;
+        if (s1[i] != s2[k]) t++;
+        k++;
+    }
+    t /= 2;
+
+    // 计算 Jaro 相似度
+    double jaro = ((double)matches / len1 +
+        (double)matches / len2 +
+        (double)(matches - t) / matches) / 3.0;
+
+    // Winkler 前缀奖励 (最多奖励前 4 个字符)
+    int prefix = 0;
+    for (int i = 0; i < std::min(std::min(len1, len2), 4); i++) {
+        if (s1[i] == s2[i]) prefix++;
+        else break;
+    }
+
+    // 0.1 是标准的 Winkler 缩放因子
+    return jaro + prefix * 0.1 * (1.0 - jaro);
 }
 
-// 函数用途：计算两个字符串之间的字符串相似度
+// 函数用途：判断用户输入是否为指令的合法缩写（头部子串）
 // 参数：
-//   s1: 字符串1
-//   s2: 字符串2
-// 返回值：两个字符串之间的字符串相似度
-// 算法：Levenshtein 距离与字符串长度的比值
-double stringSimilarity(const std::string& s1, const std::string& s2) {
-    // 计算Levenshtein距离
-    int dist = levenshteinDistance(s1, s2);
-    // 计算字符串最大长度
-    int maxLen = std::max(s1.size(), s2.size());
-    // 计算并返回字符串相似度
-    return 1.0 - static_cast<double>(dist) / maxLen;
-}
-
-// 函数用途：判断第二个字符串是否为第一个字符串的头部子串
-// 参数：
-//   s1: 字符串1
-//   s2: 字符串2
-// 返回值：若第二个字符串为第一个字符串的开头一部分则返回true,否则为false 
+//   input: 用户输入的字符串（如 "bu"）
+//   command: 预设的完整指令字符串（如 "build"）
+// 返回值：若 input 是 command 的开头部分则返回 true
 // 举例：
-//   s1 = "hello", s2 = "hello world"
-//   isSubString(s1, s2) 返回 true
-//   s1 = "world", s2 = "hello world"
-//   isSubString(s1, s2) 返回 false
-bool isSubString(const std::string& s1, const std::string& s2) {
-    return s2.find(s1) == 0;
-}
-
-// 函数用途：判断两个字符串相似度是否满足阈值
-// 参数：
-//   s1: 字符串1
-//   s2: 字符串2
-//   threshold: 相似度阈值
-// 返回值：若两个字符串相似度大于等于阈值则返回 true，否则返回 false
-bool isSimilar(const std::string& s1, const std::string& s2, double threshold) {
-    return stringSimilarity(s1, s2) >= threshold;
+//   isPrefixOf("bu", "build") -> true
+//   isPrefixOf("build", "build") -> true
+//   isPrefixOf("builds", "build") -> false
+inline bool isPrefixOf(std::string_view input, std::string_view command) {
+    return command.starts_with(input);
 }

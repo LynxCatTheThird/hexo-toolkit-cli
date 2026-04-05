@@ -1,7 +1,16 @@
 #pragma once
 
-#include <spdlog/spdlog.h> // 日志
+#include <string>       // std::string
+#include <sstream>      // std::ostringstream
+#include <iomanip>      // std::fixed, std::setprecision
+#include <functional>   // std::function
+#include <thread>       // std::this_thread::sleep_for
+#include <chrono>       // std::chrono::milliseconds
+#include <cstdio>       // stderr, fflush
+
+#include <spdlog/spdlog.h>                  // spdlog
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/fmt/bundled/color.h>       // 修复系统未安装 fmt 时的编译问题
 
 inline void initLogger() {
     auto logger = spdlog::stdout_color_mt("console");
@@ -38,19 +47,16 @@ inline void waitWithSpinner(const std::string& label,
     while (!predicate()) {
         // 每隔若干次（可调）输出一个 spinner 字符，避免频繁刷新
         if (count % 10 == 0) {
-            int idx = (count / 10) % (sizeof(spinner) - 1);  // 计算当前使用的 spinner 字符索引
-            std::cerr << "\r\033[1;33m"  // 输出回车 + 黄色文本（ANSI 转义码）
-                << "[W] " << label << " " << spinner[idx]    // 显示标签和 spinner
-                << std::flush;                               // 刷新输出
+            int idx = (count / 10) % (sizeof(spinner) - 1);
+            // 使用 fmt 库做到跨平台安全输出，且自动兼容老旧 Windows CMD
+            fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold,
+                "\r[W] {} {}", label, spinner[idx]);
+            fflush(stderr);
         }
-
-        // 睡眠 interval_ms 毫秒
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
         ++count;
     }
-
-    // 清除 spinner 行（输出空格覆盖原内容），保持终端整洁
-    std::cerr << "\r"
-        << std::string(label.size() + 10, ' ')
-        << "\033[0m\r" << std::flush;
+    // 覆盖清除行
+    fmt::print(stderr, "\r{}\r", std::string(label.size() + 10, ' '));
+    fflush(stderr);
 }

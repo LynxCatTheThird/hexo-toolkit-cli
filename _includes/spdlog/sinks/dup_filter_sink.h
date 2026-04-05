@@ -43,6 +43,11 @@ public:
     explicit dup_filter_sink(std::chrono::duration<Rep, Period> max_skip_duration)
         : max_skip_duration_{max_skip_duration} {}
 
+    template <class Rep, class Period>
+    explicit dup_filter_sink(std::chrono::duration<Rep, Period> max_skip_duration, std::vector<std::shared_ptr<sink>> sinks)
+        : max_skip_duration_{max_skip_duration}
+        , dist_sink<Mutex>(std::move(sinks)) {}
+
 protected:
     std::chrono::microseconds max_skip_duration_;
     log_clock::time_point last_msg_time_;
@@ -78,8 +83,8 @@ protected:
     }
 
     // return whether the log msg should be displayed (true) or skipped (false)
-    bool filter_(const details::log_msg &msg) {
-        auto filter_duration = msg.time - last_msg_time_;
+    bool filter_(const details::log_msg &msg) const {
+        const auto filter_duration = msg.time - last_msg_time_;
         return (filter_duration > max_skip_duration_) || (msg.payload != last_msg_payload_);
     }
 };

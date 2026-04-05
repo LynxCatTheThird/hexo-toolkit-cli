@@ -1,52 +1,71 @@
-// C++ 标准输入输出
-#include <iostream> // 输入输出
-#include <iomanip>  // 格式化输出
-#include <sstream>  // 字符串流处理
+#include <iostream>     // std::cout
+#include <string>       // std::string
+#include <string_view>  // std::string_view
+#include <filesystem>   // std::filesystem::exists
+#include <cstdlib>      // std::system
 
-// 文件相关
-#include <fstream>  // 文件输入输出
-
-// 字符串与算法
-#include <string>   // 字符串处理
-#include <algorithm> // 算法
-
-// 多线程与异步
-#include <thread>   // 线程
-#include <future>   // 异步执行
-#include <chrono>   // 时间
-
-#include <configs.hpp> //配置文件
-#include <utils.hpp> //辅助函数
-#include <algorithms.hpp> //辅助算法
-#include <hexo.hpp> //主体
+#include <globals.hpp>    // 全局变量与状态
+#include <configs.hpp>    // 配置文件解析
+#include <utils.hpp>      // 辅助函数
+#include <algorithms.hpp> // 核心算法
+#include <hexo.hpp>       // Hexo 主体业务
 
 // 函数用途：判断命令意图
 // 参数：
-//   s1: 传入预期的命令
-//   s2: 传入argv[1]
+//   expectedOrder: 传入预期的命令
+//   input: 传入argv[1]
 // 返回值：若匹配成功则返回 true，否则返回 false
-bool isOrder(const std::string& s1, const std::string& s2) {
-    if (isSubString(s1, s2) || isSubString(s2, s1)) {
-        spdlog::info("子串方法判断成功，识别意图为 " + s1);
+bool isOrder(std::string_view expectedOrder, std::string_view input) {
+    if (isPrefixOf(expectedOrder, input) || isPrefixOf(input, expectedOrder)) {
+        spdlog::info("子串方法判断成功，识别意图为 {}", expectedOrder);
         return true;
-    } else if (isSimilar(s1, s2, config.similarityThreshold)) {
-        spdlog::info("相似度方法判断成功，识别意图为 " + s1);
+    }
+    double simScore = getJaroWinklerSimilarity(expectedOrder, input);
+    if (simScore >= config.similarityThreshold) {
+        spdlog::info("模糊匹配成功，识别意图为 {}", expectedOrder);
         return true;
     } else {
-        spdlog::debug("判断意图是否为 " + s1 + " 失败");
+        spdlog::debug("判断意图是否为 {} ... 失败", expectedOrder);
         return false;
+    }
+}
+
+// 函数用途：检测使用的包管理器
+// 返回值：无，函数内部会设置全局变量 pm 和 pmCommand，并输出检测结果
+void detectPackageManager() {
+    if (std::filesystem::exists("package-lock.json")) {
+        pm = "npm";
+        pmCommand = "npx ";
+        spdlog::info("检测到包管理器: {}", pm);
+        return;
+    } else if (std::filesystem::exists("yarn.lock")) {
+        pm = "yarn";
+        pmCommand = "yarn run ";
+        spdlog::info("检测到包管理器: {}", pm);
+        return;
+    } else if (std::filesystem::exists("pnpm-lock.yaml")) {
+        pm = "pnpm";
+        pmCommand = "pnpm exec ";
+        spdlog::info("检测到包管理器: {}", pm);
+        return;
+    } else {
+        pm = "npm";
+        pmCommand = "npx ";
+        spdlog::info("未检测到特定包管理器，默认使用: {}", pm);
+        return;
     }
 }
 
 // 函数用途：显示帮助信息
 void utilHelper() {
-    std::cout << "Hexo 辅助工具\n" <<  "\
-1. 部署静态文件：build、deploy\n\
-2. 启动本地预览服务器：server\n\
-3. 更新依赖包：packages\n\
-4. 更新子模块（更新主题）：theme\n\
-5. 显示帮助信息：help\n\
-命令有一定鲁棒性，欢迎翻阅源代码查看具体实现\n";
+    std::cout << R"(Hexo 辅助工具
+1. 部署静态文件：build、deploy
+2. 启动本地预览服务器：server
+3. 更新依赖包：packages
+4. 更新子模块（更新主题）：theme
+5. 显示帮助信息：help
+命令有一定鲁棒性，欢迎翻阅源代码查看具体实现
+)";
 }
 
 // 函数用途：主函数
@@ -57,6 +76,16 @@ void utilHelper() {
 int main(int argc, char* argv[ ]) {
     initLogger();
     config.loadFromYamlIfExists();
+    detectPackageManager();
+
+    // 根据检测到的包管理器自动设置依赖搜索文件
+    if (config.dependenciesSearchingFile == "package.json") { // 如果未在配置文件中指定，则自动设置
+        if (pm == "npm") config.dependenciesSearchingFile = "package-lock.json";
+        else if (pm == "yarn") config.dependenciesSearchingFile = "yarn.lock";
+        else if (pm == "pnpm") config.dependenciesSearchingFile = "pnpm-lock.yaml";
+        else config.dependenciesSearchingFile = "package.json";
+    }
+    spdlog::info("依赖搜索文件设置为: {}", config.dependenciesSearchingFile);
 
     if (argc == 1) {
         spdlog::error("请输入参数");
@@ -69,10 +98,19 @@ int main(int argc, char* argv[ ]) {
     } else if (isOrder("theme", argv[1])) {
         std::system("git submodule update --remote --merge");
     } else if (isOrder("packages", argv[1])) {
-        std::system("rm -rf package-lock.json && rm -rf node_modules/ && ncu -u && npm install");
+        std::string command;
+        if (pm == "yarn") {
+            command = "yarn upgrade --latest";
+        } else if (pm == "pnpm") {
+            command = "pnpm update --latest";
+        } else {
+            command = "npx rimraf node_modules package-lock.json && ncu -u && npm install"; // 默认
+        }
+        spdlog::info("检测到包管理器: {}", pm);
+        std::system(command.c_str());
     } else {
         spdlog::error("无效的参数：所有判断都失败了，无法判断命令意图");
-        spdlog::error("您确定 " + std::string(argv[1]) + " 是正确的命令吗？");
+        spdlog::error("您确定 {} 是正确的命令吗？", std::string(argv[1]));
         utilHelper();
         return 1;
     }
