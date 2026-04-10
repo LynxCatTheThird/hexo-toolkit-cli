@@ -102,6 +102,11 @@ namespace SimpleYAML {
             return std::nullopt;
         }
 
+        // 检查某个键是否存在于配置文件中（用于检测空列表等覆盖情况）
+        bool has(std::string_view key) const {
+            return scalars.find(std::string(key)) != scalars.end();
+        }
+
         // 兼容你原有代码的旧接口
         std::string get(const std::string& key, const std::string& def = "") const {
             auto val = get_opt(key);
@@ -156,6 +161,8 @@ struct Config {
         {"algolia", "hexo algolia"}
     };
 
+    bool shouldAutoDetectDependencies = true; // 自动检测功能开关
+
     void logPathInfo(const std::filesystem::path& configPath) {
         spdlog::debug("配置文件路径: {}", configPath.string());
         spdlog::debug("可执行文件目录: {}", getExecutableDir().string());
@@ -186,7 +193,7 @@ struct Config {
             return;
         }
 
-        // 使用兼容的接口恢复逻辑
+        // 读取相似度阈值，并进行合理性检查
         double temp_threshold = node.getDouble("similarityThreshold", similarityThreshold);
         if (temp_threshold > 0.0 && temp_threshold < 1.0) {
             similarityThreshold = temp_threshold;
@@ -194,14 +201,26 @@ struct Config {
             spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
         }
 
-        // 读取可能的 package.json 配置
-        dependenciesSearchingFile = node.get("dependenciesSearchingFile", dependenciesSearchingFile);
-
-        if (!node.additionalTools.empty()) {
-            spdlog::info("加载了 {} 个扩展工具", node.additionalTools.size());
-            additionalTools = std::move(node.additionalTools); // 移动语义优化
+        // 使用 has 方法读取可能的依赖文件配置，支持覆盖默认值并控制检测开关
+        if (node.has("dependenciesSearchingFile")) {
+            dependenciesSearchingFile = node.get("dependenciesSearchingFile");
+            shouldAutoDetectDependencies = false; // 一旦 yaml 中明确规定了路径，关闭自动检测
+            spdlog::info("正在使用自定义依赖文件: {}", dependenciesSearchingFile);
         }
-        spdlog::info("成功加载配置 {}", configPath.string());
+
+        // 读取附属工具列表，只要键存在或列表不为空，即接管配置
+        if (node.has("additionalTools") || !node.additionalTools.empty()) {
+            additionalTools.clear(); // 清空默认工具列表
+            
+            if (!node.additionalTools.empty()) {
+                spdlog::info("加载了 {} 个扩展工具", node.additionalTools.size());
+                additionalTools = std::move(node.additionalTools); // 移动语义优化
+            } else {
+                spdlog::info("检测到空的 additionalTools 配置，已清空内置扩展工具");
+            }
+        }
+        
+        spdlog::debug("成功加载配置 {}", configPath.string());
     }
 };
 

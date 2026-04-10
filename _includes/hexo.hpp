@@ -44,8 +44,7 @@ void hexoServer() {
             // 服务器成功启动，记录时间并输出信息
             auto serverEnd = std::chrono::high_resolution_clock::now(); // 结束记录 hexo server 启动时间
             std::chrono::duration<double> serverElapsed = serverEnd - serverStart; // 计算 hexo server 启动时间
-            spdlog::info("Hexo 本地预览服务器启动用时: {} 秒", formatDuration(serverElapsed.count(), 3));
-            spdlog::info("Hexo 本地预览服务器已启动于 {} 端口", portStr);
+            spdlog::debug("Hexo 本地预览服务器启动用时: {} 秒", formatDuration(serverElapsed.count(), 3));
             spdlog::info("您现在可以访问 http://localhost:{} 预览效果了", portStr);
 
             // 阻塞，等待用户自己关掉服务器进程
@@ -69,28 +68,33 @@ void hexoBuild() {
     auto generateStart = std::chrono::high_resolution_clock::now(); // 开始记录 Generate 时间
     std::system((pmCommand + "hexo generate" + DEV_NULL).c_str());
     auto generateEnd = std::chrono::high_resolution_clock::now(); // 结束记录 Generate 时间
-    spdlog::info("执行附属命令...");
-    auto additionalStart = std::chrono::high_resolution_clock::now(); // 开始记录附属工具时间
 
-    // 执行附属工具
-    for (const auto& [keyword, command] : config.additionalTools) { // 直接解构为 keyword/command
-        if (isDependenciesPresent(config.dependenciesSearchingFile, keyword)) {
-            spdlog::info("正在执行 {} ...", keyword);
-            std::system((pmCommand + command + DEV_NULL).c_str());
-        } else {
-            spdlog::warn("本地项目中未安装 {} 或检索出错，跳过执行", keyword);
+    // 如果配置了附属工具，则执行它们
+    if (config.additionalTools.empty()) {
+        spdlog::info("未配置附属工具，跳过执行");
+    } else {
+        spdlog::info("执行附属命令...");
+        auto additionalStart = std::chrono::high_resolution_clock::now();
+        for (const auto& [keyword, command] : config.additionalTools) {
+            if (isDependenciesPresent(config.dependenciesSearchingFile, keyword)) {
+                spdlog::info("正在执行 {} ...", keyword);
+                std::system((pmCommand + command + DEV_NULL).c_str());
+            } else {
+                spdlog::warn("本地项目中未安装 {} 或检索出错，跳过执行", keyword);
+            }
         }
+        auto additionalEnd = std::chrono::high_resolution_clock::now();
+
+        std::chrono::duration<double> additionalElapsed = additionalEnd - additionalStart;
+        spdlog::info("附属工具执行完毕，用时: {} 秒", formatDuration(additionalElapsed.count(), 3));
     }
 
-    auto additionalEnd = std::chrono::high_resolution_clock::now(); // 结束记录附属工具时间
     spdlog::info("部署静态文件...");
     std::system((pmCommand + "hexo d" + DEV_NULL).c_str());
     hexoClean();
     auto totalEnd = std::chrono::high_resolution_clock::now(); // 结束记录总执行时间
     std::chrono::duration<double> generateElapsed = generateEnd - generateStart; // 计算 Generate 时间
-    spdlog::info("生成静态文件用时: {} 秒", formatDuration(generateElapsed.count(), 3));
-    std::chrono::duration<double> additionalElapsed = additionalEnd - additionalStart; // 计算附属工具时间
-    spdlog::info("附属工具用时: {} 秒", formatDuration(additionalElapsed.count(), 3));
+    spdlog::debug("生成静态文件用时: {} 秒", formatDuration(generateElapsed.count(), 3));
     std::chrono::duration<double> totalElapsed = totalEnd - totalStart; // 计算总执行时间
-    spdlog::info("本次操作执行总用时: {} 秒", formatDuration(totalElapsed.count(), 3));
+    spdlog::debug("本次操作执行总用时: {} 秒", formatDuration(totalElapsed.count(), 3));
 }

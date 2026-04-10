@@ -17,12 +17,12 @@
 // 返回值：若匹配成功则返回 true，否则返回 false
 bool isOrder(std::string_view expectedOrder, std::string_view input) {
     if (isPrefixOf(expectedOrder, input) || isPrefixOf(input, expectedOrder)) {
-        spdlog::info("子串方法判断成功，识别意图为 {}", expectedOrder);
+        spdlog::debug("子串方法判断成功，识别意图为 {}", expectedOrder);
         return true;
     }
     double simScore = getJaroWinklerSimilarity(expectedOrder, input);
     if (simScore >= config.similarityThreshold) {
-        spdlog::info("模糊匹配成功，识别意图为 {}", expectedOrder);
+        spdlog::debug("模糊匹配成功，识别意图为 {}", expectedOrder);
         return true;
     } else {
         spdlog::debug("判断意图是否为 {} ... 失败", expectedOrder);
@@ -36,22 +36,22 @@ void detectPackageManager() {
     if (std::filesystem::exists("package-lock.json")) {
         pm = "npm";
         pmCommand = "npx ";
-        spdlog::info("检测到包管理器: {}", pm);
+        spdlog::debug("检测到包管理器: {}", pm);
         return;
     } else if (std::filesystem::exists("yarn.lock")) {
         pm = "yarn";
         pmCommand = "yarn run ";
-        spdlog::info("检测到包管理器: {}", pm);
+        spdlog::debug("检测到包管理器: {}", pm);
         return;
     } else if (std::filesystem::exists("pnpm-lock.yaml")) {
         pm = "pnpm";
         pmCommand = "pnpm exec ";
-        spdlog::info("检测到包管理器: {}", pm);
+        spdlog::debug("检测到包管理器: {}", pm);
         return;
     } else {
         pm = "npm";
         pmCommand = "npx ";
-        spdlog::info("未检测到特定包管理器，默认使用: {}", pm);
+        spdlog::debug("未检测到特定包管理器，默认使用: {}", pm);
         return;
     }
 }
@@ -79,13 +79,13 @@ int main(int argc, char* argv[ ]) {
     detectPackageManager();
 
     // 根据检测到的包管理器自动设置依赖搜索文件
-    if (config.dependenciesSearchingFile == "package.json") { // 如果未在配置文件中指定，则自动设置
+    if (config.shouldAutoDetectDependencies) { // 如果未在配置文件中指定，则自动设置
         if (pm == "npm") config.dependenciesSearchingFile = "package-lock.json";
         else if (pm == "yarn") config.dependenciesSearchingFile = "yarn.lock";
         else if (pm == "pnpm") config.dependenciesSearchingFile = "pnpm-lock.yaml";
         else config.dependenciesSearchingFile = "package.json";
     }
-    spdlog::info("依赖搜索文件设置为: {}", config.dependenciesSearchingFile);
+    spdlog::debug("依赖搜索文件设置为: {}", config.dependenciesSearchingFile);
 
     if (argc == 1) {
         spdlog::error("请输入参数");
@@ -106,7 +106,7 @@ int main(int argc, char* argv[ ]) {
         } else {
             command = "npx rimraf node_modules package-lock.json && ncu -u && npm install"; // 默认
         }
-        spdlog::info("检测到包管理器: {}", pm);
+        spdlog::debug("检测到包管理器: {}", pm);
         std::system(command.c_str());
     } else {
         spdlog::error("无效的参数：所有判断都失败了，无法判断命令意图");

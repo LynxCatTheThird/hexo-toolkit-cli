@@ -16,7 +16,7 @@ inline void initLogger() {
     auto logger = spdlog::stdout_color_mt("console");
     spdlog::set_default_logger(logger);
     spdlog::set_pattern("%^[%L] %v%$");  // 彩色等级 + 消息
-    spdlog::set_level(spdlog::level::trace);  // 打开全部等级
+    spdlog::set_level(spdlog::level::info);
 }
 
 // 函数用途：格式化执行用时
