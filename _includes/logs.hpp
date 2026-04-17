@@ -1,16 +1,16 @@
 #pragma once
 
-#include <string>       // std::string
-#include <sstream>      // std::ostringstream
-#include <iomanip>      // std::fixed, std::setprecision
-#include <functional>   // std::function
-#include <thread>       // std::this_thread::sleep_for
-#include <chrono>       // std::chrono::milliseconds
-#include <cstdio>       // stderr, fflush
+#include <chrono>      // std::chrono::milliseconds
+#include <cstdio>      // stderr, fflush
+#include <functional>  // std::function
+#include <iomanip>     // std::fixed, std::setprecision
+#include <sstream>     // std::ostringstream
+#include <string>      // std::string
+#include <thread>      // std::this_thread::sleep_for
 
-#include <spdlog/spdlog.h>                  // spdlog
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/fmt/bundled/color.h>       // 修复系统未安装 fmt 时的编译问题
+#include "spdlog/fmt/bundled/color.h"         // 修复系统未安装 fmt 时的编译问题
+#include "spdlog/sinks/stdout_color_sinks.h"  // IWYU pragma: keep //颜色定义
+#include "spdlog/spdlog.h"                    // spdlog
 
 inline void initLogger() {
     auto logger = spdlog::stdout_color_mt("console");
@@ -36,11 +36,9 @@ inline std::string formatDuration(double seconds, int precision = 2) {
 //   predicate   —— 一个返回 bool 的函数对象；返回 true 表示结束等待
 //   interval_ms —— 每次轮询的时间间隔（毫秒），默认为 100ms
 // 返回值：无
-inline void waitWithSpinner(const std::string& label,
-    std::function<bool()> predicate,
-    int interval_ms = 100) {
+inline void waitWithSpinner(const std::string &label, std::function<bool()> predicate, int interval_ms = 100) {
     // 定义转圈动画的字符序列
-    static const char spinner[ ] = "|/-\\";
+    static const char spinner[] = "|/-\\";
     int count = 0;
 
     // 当 predicate() 返回 false 时持续等待
@@ -49,8 +47,8 @@ inline void waitWithSpinner(const std::string& label,
         if (count % 10 == 0) {
             int idx = (count / 10) % (sizeof(spinner) - 1);
             // 使用 fmt 库做到跨平台安全输出，且自动兼容老旧 Windows CMD
-            fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold,
-                "\r[W] {} {}", label, spinner[idx]);
+            fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r[W] {} {}", label,
+                       spinner[idx]);
             fflush(stderr);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
