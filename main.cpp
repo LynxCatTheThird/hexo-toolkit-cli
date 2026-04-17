@@ -1,14 +1,13 @@
-#include <iostream>     // std::cout
-#include <string>       // std::string
-#include <string_view>  // std::string_view
-#include <filesystem>   // std::filesystem::exists
-#include <cstdlib>      // std::system
+#include <cstdlib>     // std::system
+#include <filesystem>  // std::filesystem::exists
+#include <iostream>    // std::cout
+#include <string>      // std::string
 
-#include <globals.hpp>    // 全局变量与状态
-#include <configs.hpp>    // 配置文件解析
-#include <utils.hpp>      // 辅助函数
-#include <algorithms.hpp> // 核心算法
-#include <hexo.hpp>       // Hexo 主体业务
+#include "algorithms.hpp"  // 核心算法
+#include "configs.hpp"     // 配置文件解析
+#include "globals.hpp"     // 全局变量与状态
+#include "hexo.hpp"        // Hexo 主体业务
+#include "logs.hpp"        // 日志
 
 // 函数用途：判断命令意图
 // 参数：
@@ -73,17 +72,21 @@ void utilHelper() {
 //   argc: 命令行参数个数
 //   argv: 命令行参数数组
 // 返回值：0 - 成功，1 - 失败
-int main(int argc, char* argv[ ]) {
+int main(int argc, char *argv[]) {
     initLogger();
     config.loadFromYamlIfExists();
     detectPackageManager();
 
     // 根据检测到的包管理器自动设置依赖搜索文件
-    if (config.shouldAutoDetectDependencies) { // 如果未在配置文件中指定，则自动设置
-        if (pm == "npm") config.dependenciesSearchingFile = "package-lock.json";
-        else if (pm == "yarn") config.dependenciesSearchingFile = "yarn.lock";
-        else if (pm == "pnpm") config.dependenciesSearchingFile = "pnpm-lock.yaml";
-        else config.dependenciesSearchingFile = "package.json";
+    if (config.shouldAutoDetectDependencies) {  // 如果未在配置文件中指定，则自动设置
+        if (pm == "npm")
+            config.dependenciesSearchingFile = "package-lock.json";
+        else if (pm == "yarn")
+            config.dependenciesSearchingFile = "yarn.lock";
+        else if (pm == "pnpm")
+            config.dependenciesSearchingFile = "pnpm-lock.yaml";
+        else
+            config.dependenciesSearchingFile = "package.json";
     }
     spdlog::debug("依赖搜索文件设置为: {}", config.dependenciesSearchingFile);
 
@@ -104,7 +107,7 @@ int main(int argc, char* argv[ ]) {
         } else if (pm == "pnpm") {
             command = "pnpm update --latest";
         } else {
-            command = "npx rimraf node_modules package-lock.json && ncu -u && npm install"; // 默认
+            command = "npx rimraf node_modules package-lock.json && ncu -u && npm install";  // 默认
         }
         spdlog::debug("检测到包管理器: {}", pm);
         std::system(command.c_str());

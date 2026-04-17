@@ -2,6 +2,11 @@
 .vscode/
 .idea/
 .vscode*
+.clangd/
+.clang-format
+compile_commands.json
+compile_flags.txt
+.cache
 
 # 编译产物
 *.o
@@ -9,6 +14,7 @@
 *.d
 *.out
 *.exe
+build/
 
 # 静态库与动态库
 *.a

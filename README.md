@@ -7,7 +7,7 @@ make all && make install
 ```
 
 > [!WARNING]
-> 请使用支持 C++26 的编译器，低版本编译器未经测试
+> 请使用支持 C++20 的编译器，低版本编译器未经测试
 
 ### 配置文件
 
@@ -20,5 +20,4 @@ additionalTools:
   - ["swpp", "hexo swpp"]
   - ["gulp", "gulp zip"]
   - ["algolia", "hexo algolia"]
-
 ```

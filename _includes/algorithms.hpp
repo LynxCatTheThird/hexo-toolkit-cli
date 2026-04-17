@@ -1,15 +1,15 @@
 #pragma once
 
-#include <vector>       // std::vector
-#include <string_view>  // std::string_view
 #include <algorithm>    // std::max, std::min
+#include <string_view>  // std::string_view
+#include <vector>       // std::vector
 
 // 函数用途：计算两个字符串之间的 Jaro-Winkler 相似度
 // 参数：
 //   s1: 字符串1
 //   s2: 字符串2
 // 返回值：返回 0.0 到 1.0 之间的相似度，1.0 表示完全匹配
-inline double getJaroWinklerSimilarity(const std::string_view& s1, const std::string_view& s2) {
+inline double getJaroWinklerSimilarity(const std::string_view &s1, const std::string_view &s2) {
     int len1 = s1.length();
     int len2 = s2.length();
 
@@ -52,15 +52,15 @@ inline double getJaroWinklerSimilarity(const std::string_view& s1, const std::st
     t /= 2;
 
     // 计算 Jaro 相似度
-    double jaro = ((double)matches / len1 +
-        (double)matches / len2 +
-        (double)(matches - t) / matches) / 3.0;
+    double jaro = ((double)matches / len1 + (double)matches / len2 + (double)(matches - t) / matches) / 3.0;
 
     // Winkler 前缀奖励 (最多奖励前 4 个字符)
     int prefix = 0;
     for (int i = 0; i < std::min(std::min(len1, len2), 4); i++) {
-        if (s1[i] == s2[i]) prefix++;
-        else break;
+        if (s1[i] == s2[i])
+            prefix++;
+        else
+            break;
     }
 
     // 0.1 是标准的 Winkler 缩放因子
@@ -76,6 +76,4 @@ inline double getJaroWinklerSimilarity(const std::string_view& s1, const std::st
 //   isPrefixOf("bu", "build") -> true
 //   isPrefixOf("build", "build") -> true
 //   isPrefixOf("builds", "build") -> false
-inline bool isPrefixOf(std::string_view input, std::string_view command) {
-    return command.starts_with(input);
-}
+inline bool isPrefixOf(std::string_view input, std::string_view command) { return command.starts_with(input); }
