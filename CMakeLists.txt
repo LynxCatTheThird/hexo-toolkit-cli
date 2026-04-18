@@ -19,6 +19,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+# 拉取 rapidyaml
+FetchContent_Declare(
+  rapidyaml
+  GIT_REPOSITORY https://github.com/biojppm/rapidyaml
+  GIT_TAG        v0.11.1
+  GIT_SHALLOW    ON
+)
+FetchContent_MakeAvailable(rapidyaml)
+
 # 目标定义
 add_executable(${PROJECT_NAME} main.cpp)
 
@@ -44,6 +53,7 @@ endif()
 # 链接库
 target_link_libraries(${PROJECT_NAME} PRIVATE 
     spdlog::spdlog 
+    ryml
 )
 
 if(WIN32)

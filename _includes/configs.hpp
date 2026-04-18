@@ -8,6 +8,8 @@
 #include <unordered_map>  // std::unordered_map
 #include <vector>         // std::vector, std::pair
 
+#include "ryml.hpp"      // rapidyaml 核心
+#include "ryml_std.hpp"  // rapidyaml std::string 支持
 #include "spdlog/spdlog.h"
 
 #if defined(_WIN32)
@@ -46,50 +48,44 @@ class Node {
 
     // 传入 string_view 避免拷贝，内部按行切割
     bool parse(std::string_view content) {
-        size_t start = 0;
-        while (start < content.size()) {
-            // 手动寻找换行符，比 std::getline(stringstream) 性能更高，无内存分配
-            size_t end = content.find('\n', start);
-            if (end == std::string_view::npos) end = content.size();
+        try {
+            // 使用 rapidyaml 直接解析内容，零拷贝或最小拷贝
+            ryml::Tree tree = ryml::parse_in_arena(ryml::csubstr(content.data(), content.size()));
 
-            std::string_view line = content.substr(start, end - start);
-            start = end + 1;  // 移动到下一行
-
-            // 剔除注释
-            if (auto hash_pos = line.find('#'); hash_pos != std::string_view::npos) {
-                line = line.substr(0, hash_pos);
+            if (tree.empty() || !tree.rootref().is_map()) {
+                return true;
             }
 
-            line = trim(line);
-            if (line.empty()) continue;
+            for (auto child : tree.rootref().children()) {
+                if (child.has_key()) {
+                    std::string key;
+                    child >> ryml::key(key);
 
-            // 解析 - [k, v] 格式的数组
-            if (line.front() == '-') {
-                auto pos1 = line.find('[');
-                auto pos2 = line.find(']');
-                if (pos1 != std::string_view::npos && pos2 != std::string_view::npos && pos2 > pos1) {
-                    auto pairStr = line.substr(pos1 + 1, pos2 - pos1 - 1);
-                    auto comma = pairStr.find(',');
-                    if (comma != std::string_view::npos) {
-                        // 使用 string_view 裁剪并去引号
-                        std::string_view k = stripQuotes(trim(pairStr.substr(0, comma)));
-                        std::string_view v = stripQuotes(trim(pairStr.substr(comma + 1)));
-                        // 仅在此处存入 vector 时发生拷贝
-                        additionalTools.emplace_back(std::string(k), std::string(v));
+                    // 记录键，用于下方 has() 判断覆盖情况
+                    scalars[key] = "";
+
+                    // 解析 - [k, v] 格式的数组
+                    if (child.is_seq() && key == "additionalTools") {
+                        for (auto item : child.children()) {
+                            if (item.is_seq() && item.num_children() >= 2) {
+                                std::string k, v;
+                                item[0] >> k;
+                                item[1] >> v;
+                                additionalTools.emplace_back(k, v);
+                            }
+                        }
+                    }
+                    // 解析 key: value 格式
+                    else if (child.has_val()) {
+                        std::string val;
+                        child >> val;
+                        scalars[key] = val;
                     }
                 }
             }
-            // 解析 key: value 格式
-            else {
-                auto colon = line.find(':');
-                if (colon != std::string_view::npos) {
-                    std::string_view key_view = trim(line.substr(0, colon));
-                    std::string_view val_view = stripQuotes(trim(line.substr(colon + 1)));
-                    if (!key_view.empty()) {
-                        scalars[std::string(key_view)] = std::string(val_view);
-                    }
-                }
-            }
+        } catch (...) {
+            // rapidyaml 在语法错误时可能会抛出异常或触发断言
+            return false;
         }
         return true;
     }
@@ -105,7 +101,7 @@ class Node {
     // 检查某个键是否存在于配置文件中（用于检测空列表等覆盖情况）
     bool has(std::string_view key) const { return scalars.find(std::string(key)) != scalars.end(); }
 
-    // 兼容你原有代码的旧接口
+    // 兼容原有代码的旧接口
     std::string get(const std::string &key, const std::string &def = "") const {
         auto val = get_opt(key);
         return val.has_value() ? *val : def;
@@ -132,6 +128,7 @@ class Node {
     }
 
    private:
+    // 原有的辅助函数已不再被内部调用，但保留以最小化对类定义的侵入
     static constexpr std::string_view trim(std::string_view s) {
         size_t start = s.find_first_not_of(" \t\r\n");
         if (start == std::string_view::npos) return {};
