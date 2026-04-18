@@ -30,27 +30,27 @@ bool isOrder(std::string_view expectedOrder, std::string_view input) {
 }
 
 // 函数用途：检测使用的包管理器
-// 返回值：无，函数内部会设置全局变量 pm 和 pmCommand，并输出检测结果
+// 返回值：无，函数内部会设置全局变量 packageManager 和 packageManagerCommand，并输出检测结果
 void detectPackageManager() {
     if (std::filesystem::exists("package-lock.json")) {
-        pm = "npm";
-        pmCommand = "npx ";
-        spdlog::debug("检测到包管理器: {}", pm);
+        packageManager = "npm";
+        packageManagerCommand = "npx ";
+        spdlog::debug("检测到包管理器: {}", packageManager);
         return;
     } else if (std::filesystem::exists("yarn.lock")) {
-        pm = "yarn";
-        pmCommand = "yarn run ";
-        spdlog::debug("检测到包管理器: {}", pm);
+        packageManager = "yarn";
+        packageManagerCommand = "yarn run ";
+        spdlog::debug("检测到包管理器: {}", packageManager);
         return;
     } else if (std::filesystem::exists("pnpm-lock.yaml")) {
-        pm = "pnpm";
-        pmCommand = "pnpm exec ";
-        spdlog::debug("检测到包管理器: {}", pm);
+        packageManager = "pnpm";
+        packageManagerCommand = "pnpm exec ";
+        spdlog::debug("检测到包管理器: {}", packageManager);
         return;
     } else {
-        pm = "npm";
-        pmCommand = "npx ";
-        spdlog::debug("未检测到特定包管理器，默认使用: {}", pm);
+        packageManager = "npm";
+        packageManagerCommand = "npx ";
+        spdlog::debug("未检测到特定包管理器，默认使用: {}", packageManager);
         return;
     }
 }
@@ -79,11 +79,11 @@ int main(int argc, char *argv[]) {
 
     // 根据检测到的包管理器自动设置依赖搜索文件
     if (config.shouldAutoDetectDependencies) {  // 如果未在配置文件中指定，则自动设置
-        if (pm == "npm")
+        if (packageManager == "npm")
             config.dependenciesSearchingFile = "package-lock.json";
-        else if (pm == "yarn")
+        else if (packageManager == "yarn")
             config.dependenciesSearchingFile = "yarn.lock";
-        else if (pm == "pnpm")
+        else if (packageManager == "pnpm")
             config.dependenciesSearchingFile = "pnpm-lock.yaml";
         else
             config.dependenciesSearchingFile = "package.json";
@@ -102,14 +102,14 @@ int main(int argc, char *argv[]) {
         std::system("git submodule update --remote --merge");
     } else if (isOrder("packages", argv[1])) {
         std::string command;
-        if (pm == "yarn") {
+        if (packageManager == "yarn") {
             command = "yarn upgrade --latest";
-        } else if (pm == "pnpm") {
+        } else if (packageManager == "pnpm") {
             command = "pnpm update --latest";
         } else {
             command = "npx rimraf node_modules package-lock.json && ncu -u && npm install";  // 默认
         }
-        spdlog::debug("检测到包管理器: {}", pm);
+        spdlog::debug("检测到包管理器: {}", packageManager);
         std::system(command.c_str());
     } else {
         spdlog::error("无效的参数：所有判断都失败了，无法判断命令意图");
