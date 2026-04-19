@@ -112,10 +112,10 @@ if(WIN32)
 endif()
 
 # UPX 产物压缩
-find_program(UPX_PROGRAM upx)
-if(UPX_PROGRAM)
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${UPX_PROGRAM} --best --lzma $<TARGET_FILE:${PROJECT_NAME}>
-        COMMENT "Compressing binary with UPX"
-    )
-endif()
+# find_program(UPX_PROGRAM upx)
+# if(UPX_PROGRAM)
+#     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+#         COMMAND ${UPX_PROGRAM} --best --lzma $<TARGET_FILE:${PROJECT_NAME}>
+#         COMMENT "Compressing binary with UPX"
+#     )
+# endif()
