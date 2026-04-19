@@ -28,15 +28,14 @@
 - `ninja`: 更快的构建后端引擎
 - `ccache`: C++ 编译缓存工具
 - `mold`: 更快的链接器
-- `upx`: 二进制产物压缩工具
 
 - **Arch Linux**:
   ```bash
-  sudo pacman -S ninja ccache mold upx
+  sudo pacman -S ninja ccache mold
   ```
 - **Ubuntu / Debian**:
   ```bash
-  sudo apt install ninja-build ccache mold upx-ucl
+  sudo apt install ninja-build ccache mold
   ```
 
 ### 编译
