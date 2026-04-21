@@ -8,8 +8,8 @@
 #include <unordered_map>  // std::unordered_map
 #include <vector>         // std::vector, std::pair
 
-#include "ryml.hpp"      // rapidyaml 核心
-#include "ryml_std.hpp"  // rapidyaml std::string 支持
+#include "ryml.hpp"      // IWYU pragma: keep // rapidyaml 核心
+#include "ryml_std.hpp"  // IWYU pragma: keep // rapidyaml std::string 支持
 #include "spdlog/spdlog.h"
 
 #if defined(_WIN32)
@@ -180,8 +180,15 @@ struct Config {
             return;
         }
 
-        // 一次性把文件读入 string，比使用 stringstream 快得多
-        std::string content((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+        // 一次性读取文件内容，比 istreambuf_iterator 逐字符读取快得多
+        fin.seekg(0, std::ios::end);
+        std::streamsize size = fin.tellg();
+        std::string content;
+        if (size > 0) {
+            content.resize(static_cast<size_t>(size));
+            fin.seekg(0, std::ios::beg);
+            fin.read(content.data(), size);
+        }
 
         SimpleYAML::Node node;
         if (!node.parse(content)) {

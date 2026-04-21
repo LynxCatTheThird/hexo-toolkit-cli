@@ -2,14 +2,13 @@
 
 #include <algorithm>    // std::max, std::min
 #include <string_view>  // std::string_view
-#include <vector>       // std::vector
 
 // 函数用途：计算两个字符串之间的 Jaro-Winkler 相似度
 // 参数：
 //   s1: 字符串1
 //   s2: 字符串2
 // 返回值：返回 0.0 到 1.0 之间的相似度，1.0 表示完全匹配
-inline double getJaroWinklerSimilarity(const std::string_view &s1, const std::string_view &s2) {
+inline double getJaroWinklerSimilarity(std::string_view s1, std::string_view s2) {
     int len1 = s1.length();
     int len2 = s2.length();
 
@@ -20,9 +19,15 @@ inline double getJaroWinklerSimilarity(const std::string_view &s1, const std::st
     // 匹配窗口大小
     int match_distance = std::max(len1, len2) / 2 - 1;
 
-    // 记录被匹配过的字符位置
-    std::vector<bool> s1_matches(len1, false);
-    std::vector<bool> s2_matches(len2, false);
+    // 对于 CLI 命令行工具，输入参数的长度通常极短
+    // 使用 std::vector 会强制在堆上动态分配内存，开销远大于计算本身
+    // 我们设定一个合理的上限（例如 32），在这个范围内使用栈内存，速度极快
+    const int MAX_LEN = 32;
+    if (len1 > MAX_LEN || len2 > MAX_LEN) return 0.0;  // 如果输入了离谱的超长字符串，直接判定为不匹配
+
+    // 记录被匹配过的字符位置 (栈上分配，无 new/malloc 开销)
+    bool s1_matches[MAX_LEN] = {false};
+    bool s2_matches[MAX_LEN] = {false};
 
     int matches = 0;
     for (int i = 0; i < len1; i++) {

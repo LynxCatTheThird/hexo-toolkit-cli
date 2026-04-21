@@ -76,8 +76,24 @@ inline void hexoBuild() {
     } else {
         spdlog::info("执行附属命令...");
         auto additionalStart = std::chrono::high_resolution_clock::now();
+        
+        // 一次性读取并缓存依赖文件内容，避免在循环中重复读取磁盘
+        std::string depContent;
+        std::ifstream depFile(config.dependenciesSearchingFile, std::ios::binary);
+        if (depFile) {
+            depFile.seekg(0, std::ios::end);
+            std::streamsize size = depFile.tellg();
+            if (size > 0) {
+                depContent.resize(static_cast<size_t>(size));
+                depFile.seekg(0, std::ios::beg);
+                depFile.read(depContent.data(), size);
+            }
+        } else {
+            spdlog::warn("无法打开依赖文件 {}", config.dependenciesSearchingFile);
+        }
+
         for (const auto &[keyword, command] : config.additionalTools) {
-            if (isDependenciesPresent(config.dependenciesSearchingFile, keyword)) {
+            if (isDependenciesPresent(depContent, keyword)) {
                 spdlog::info("正在执行 {} ...", keyword);
                 std::system(std::format("{}{}{}", packageManagerCommand, command, DEV_NULL).c_str());
             } else {
