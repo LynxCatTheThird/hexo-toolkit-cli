@@ -1,11 +1,8 @@
 #pragma once
 
 #include <cstdlib>      // std::system
-#include <fstream>      // std::ifstream
 #include <string>       // std::string
 #include <string_view>  // std::string_view
-
-#include "spdlog/spdlog.h"  //spdlog
 
 #if defined(_WIN32)
 #include <winsock2.h>  // Windows Sockets API
@@ -22,24 +19,14 @@ inline constexpr std::string_view DEV_NULL = " > NUL";
 inline constexpr std::string_view DEV_NULL = " > /dev/null";
 #endif
 
-// 函数用途：检查文件中是否存在特定依赖项
+// 函数用途：检查缓存的文件内容中是否存在特定依赖项
 // 参数：
-//   filename: 要检查的文件名
-//   dependencie: 要查找的依赖项
-// 返回值：若文件中存在指定的依赖项则返回 true，否则返回 false
-inline bool isDependenciesPresent(const std::string &filename, const std::string &dependencies) {
-    std::ifstream file(filename);  // 打开文件
-    if (!file.is_open()) {
-        spdlog::error("无法打开 {}", filename);  // 输出打开文件失败的信息
-        return false;
-    }
-    std::string line;
-    while (std::getline(file, line)) {                       // 逐行读取文件
-        if (line.find(dependencies) != std::string::npos) {  // 查找是否含有预期字符串
-            return true;                                     // 若找到依赖项则返回 true
-        }
-    }
-    return false;  // 未找到依赖项则返回 false
+//   fileContent: 文件的完整内容字符串
+//   dependencies: 要查找的依赖项
+// 返回值：若字符串中存在指定的依赖项则返回 true，否则返回 false
+inline bool isDependenciesPresent(const std::string &fileContent, const std::string &dependencies) {
+    if (fileContent.empty()) return false;
+    return fileContent.find(dependencies) != std::string::npos;
 }
 
 // 函数用途：判断给定端口是否处于打开状态
