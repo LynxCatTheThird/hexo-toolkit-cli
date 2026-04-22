@@ -7,6 +7,17 @@
 #if defined(_WIN32)
 #include <winsock2.h>  // Windows Sockets API
 #pragma comment(lib, "ws2_32.lib")
+
+// RAII 包装：确保 Winsock 在程序生命周期内只初始化一次
+// 避免 isPortOpen 在轮询循环中反复调用 WSAStartup/WSACleanup 的开销
+namespace detail {
+struct WinsockInit {
+    WSADATA data{};
+    WinsockInit() { WSAStartup(MAKEWORD(2, 2), &data); }
+    ~WinsockInit() { WSACleanup(); }
+};
+}  // namespace detail
+
 #else
 #include <netinet/in.h>  // AF_INET, INADDR_LOOPBACK
 #include <unistd.h>      // close()
@@ -35,14 +46,10 @@ inline bool isDependenciesPresent(std::string_view fileContent, std::string_view
 // 返回值：若端口打开则返回true，否则返回false
 inline bool isPortOpen(int port) {
 #if defined(_WIN32)
-    WSADATA wsaData;
-    // Windows 下必须先初始化网络库
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return false;
+    // 保证局部 static 的初始化是线程安全的，Winsock 只会初始化一次
+    static detail::WinsockInit wsaInit;
     SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == INVALID_SOCKET) {  // 若创建套接字失败返回端口未打开
-        WSACleanup();
-        return false;
-    }
+    if (sock == INVALID_SOCKET) return false;
 #else
     int sock = socket(AF_INET, SOCK_STREAM, 0);  // 创建一个套接字
     if (sock < 0) return false;                  // 若创建套接字失败返回端口未打开
@@ -59,8 +66,7 @@ inline bool isPortOpen(int port) {
     }
 
 #if defined(_WIN32)
-    closesocket(sock);  // 关闭套接字
-    WSACleanup();
+    closesocket(sock);  // 关闭套接字（WSACleanup 由 ~WinsockInit 负责）
 #else
     close(sock);  // 关闭套接字
 #endif

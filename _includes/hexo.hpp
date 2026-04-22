@@ -12,7 +12,8 @@
 // 函数用途：清理 Hexo 产生的缓存文件
 inline void hexoClean() {
     spdlog::info("清理 Hexo 缓存文件...");
-    std::system(std::format("{}hexo clean{}", config.packageManagerCommand, DEV_NULL).c_str());
+    int ret = std::system(std::format("{}hexo clean{}", config.packageManagerCommand, DEV_NULL).c_str());
+    if (ret != 0) spdlog::warn("hexo clean 异常退出，退出码: {}", ret);
 }
 
 // 函数用途：启动 Hexo 本地预览服务器
@@ -65,8 +66,9 @@ inline void hexoBuild() {
     hexoClean();
     spdlog::info("生成静态文件...");
     auto generateStart = std::chrono::high_resolution_clock::now();  // 开始记录 Generate 时间
-    std::system(std::format("{}hexo generate{}", config.packageManagerCommand, DEV_NULL).c_str());
+    int generateRet = std::system(std::format("{}hexo generate{}", config.packageManagerCommand, DEV_NULL).c_str());
     auto generateEnd = std::chrono::high_resolution_clock::now();  // 结束记录 Generate 时间
+    if (generateRet != 0) spdlog::error("hexo generate 失败，退出码: {}", generateRet);
 
     // 如果配置了附属工具，则执行它们
     if (config.additionalTools.empty()) {
@@ -93,7 +95,8 @@ inline void hexoBuild() {
         for (const auto &[keyword, command] : config.additionalTools) {
             if (isDependenciesPresent(depContent, keyword)) {
                 spdlog::info("正在执行 {} ...", keyword);
-                std::system(std::format("{}{}{}", config.packageManagerCommand, command, DEV_NULL).c_str());
+                int toolRet = std::system(std::format("{}{}{}", config.packageManagerCommand, command, DEV_NULL).c_str());
+                if (toolRet != 0) spdlog::warn("附属工具 {} 执行异常，退出码: {}", keyword, toolRet);
             } else {
                 spdlog::warn("本地项目中未安装 {} 或检索出错，跳过执行", keyword);
             }
@@ -105,7 +108,8 @@ inline void hexoBuild() {
     }
 
     spdlog::info("部署静态文件...");
-    std::system(std::format("{}hexo d{}", config.packageManagerCommand, DEV_NULL).c_str());
+    int deployRet = std::system(std::format("{}hexo d{}", config.packageManagerCommand, DEV_NULL).c_str());
+    if (deployRet != 0) spdlog::error("hexo deploy 失败，退出码: {}", deployRet);
     hexoClean();
     auto totalEnd = std::chrono::high_resolution_clock::now();                    // 结束记录总执行时间
     std::chrono::duration<double> generateElapsed = generateEnd - generateStart;  // 计算 Generate 时间

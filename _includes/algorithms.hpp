@@ -3,27 +3,33 @@
 #include <algorithm>    // std::max, std::min
 #include <string_view>  // std::string_view
 
+#include "spdlog/spdlog.h"  // spdlog::warn
+
 // 函数用途：计算两个字符串之间的 Jaro-Winkler 相似度
 // 参数：
 //   s1: 字符串1
 //   s2: 字符串2
 // 返回值：返回 0.0 到 1.0 之间的相似度，1.0 表示完全匹配
 inline double getJaroWinklerSimilarity(std::string_view s1, std::string_view s2) {
-    int len1 = s1.length();
-    int len2 = s2.length();
+    // 对于 CLI 命令行工具，输入参数的长度通常极短
+    // 使用 std::vector 会强制在堆上动态分配内存，开销远大于计算本身
+    // 这里可以设定一个合理的上限（32），在这个范围内使用栈内存，速度极快
+    // 此检查优先于一切后续比较，避免在超长输入上浪费算力
+    const int MAX_LEN = 32;
+    if (static_cast<int>(s1.size()) > MAX_LEN || static_cast<int>(s2.size()) > MAX_LEN) {
+        spdlog::warn("输入字符串超过最大长度限制 ({})，跳过相似度计算", MAX_LEN);
+        return 0.0;
+    }
+
+    int len1 = static_cast<int>(s1.length());
+    int len2 = static_cast<int>(s2.length());
 
     if (len1 == 0 && len2 == 0) return 1.0;
     if (len1 == 0 || len2 == 0) return 0.0;
     if (s1 == s2) return 1.0;
 
-    // 匹配窗口大小
-    int match_distance = std::max(len1, len2) / 2 - 1;
-
-    // 对于 CLI 命令行工具，输入参数的长度通常极短
-    // 使用 std::vector 会强制在堆上动态分配内存，开销远大于计算本身
-    // 我们设定一个合理的上限（例如 32），在这个范围内使用栈内存，速度极快
-    const int MAX_LEN = 32;
-    if (len1 > MAX_LEN || len2 > MAX_LEN) return 0.0;  // 如果输入了离谱的超长字符串，直接判定为不匹配
+    // 匹配窗口大小（保证非负，避免单字符串时 /2-1 = -1 的边界问题）
+    int match_distance = std::max(0, std::max(len1, len2) / 2 - 1);
 
     // 记录被匹配过的字符位置 (栈上分配，无 new/malloc 开销)
     bool s1_matches[MAX_LEN] = {false};

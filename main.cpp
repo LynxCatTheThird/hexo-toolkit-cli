@@ -1,7 +1,6 @@
-#include <cstdlib>     // std::system
-#include <filesystem>  // std::filesystem::exists
-#include <iostream>    // std::cout
-#include <string>      // std::string
+#include <cstdlib>   // std::system
+#include <iostream>  // std::cout
+#include <string>    // std::string
 
 #include "algorithms.hpp"  // 核心算法
 #include "configs.hpp"     // 配置文件解析
@@ -27,8 +26,6 @@ bool isOrder(std::string_view expectedOrder, std::string_view input) {
         return false;
     }
 }
-
-
 
 // 函数用途：显示帮助信息
 void utilHelper() {
@@ -63,16 +60,13 @@ int main(int argc, char *argv[]) {
     } else if (isOrder("theme", argv[1])) {
         std::system("git submodule update --remote --merge");
     } else if (isOrder("packages", argv[1])) {
-        std::string command;
-        if (config.packageManager == "yarn") {
-            command = "yarn upgrade --latest";
-        } else if (config.packageManager == "pnpm") {
-            command = "pnpm update --latest";
-        } else {
-            command = "npx rimraf node_modules package-lock.json && ncu -u && npm install";  // 默认
-        }
         spdlog::debug("检测到包管理器: {}", config.packageManager);
-        std::system(command.c_str());
+        for (const auto &pm : PM_TABLE) {
+            if (config.packageManager == pm.name) {
+                std::system(std::string(pm.upgradeCommand).c_str());
+                break;
+            }
+        }
     } else {
         spdlog::error("无效的参数：所有判断都失败了，无法判断命令意图");
         spdlog::error("您确定 {} 是正确的命令吗？", std::string(argv[1]));
