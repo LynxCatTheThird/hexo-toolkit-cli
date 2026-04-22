@@ -1,11 +1,12 @@
 #pragma once
 
-#include <chrono>      // std::chrono::milliseconds
-#include <cstdio>      // stderr, fflush
-#include <functional>  // std::function
-#include <format>      // std::format
-#include <string>      // std::string
-#include <thread>      // std::this_thread::sleep_for
+#include <chrono>       // std::chrono::milliseconds
+#include <cstdio>       // stderr, fflush
+#include <format>       // std::format
+#include <functional>   // std::function
+#include <string>       // std::string
+#include <string_view>  // std::string_view
+#include <thread>       // std::this_thread::sleep_for
 
 #include "spdlog/fmt/bundled/color.h"         // 修复系统未安装 fmt 时的编译问题
 #include "spdlog/sinks/stdout_color_sinks.h"  // IWYU pragma: keep //颜色定义
@@ -33,7 +34,7 @@ inline std::string formatDuration(double seconds, int precision = 2) {
 //   predicate   —— 一个返回 bool 的函数对象；返回 true 表示结束等待
 //   interval_ms —— 每次轮询的时间间隔（毫秒），默认为 100ms
 // 返回值：无
-inline void waitWithSpinner(const std::string &label, std::function<bool()> predicate, int interval_ms = 100) {
+inline void waitWithSpinner(std::string_view label, std::function<bool()> predicate, int interval_ms = 100) {
     // 定义转圈动画的字符序列
     static const char spinner[] = "|/-\\";
     int count = 0;
@@ -52,6 +53,6 @@ inline void waitWithSpinner(const std::string &label, std::function<bool()> pred
         ++count;
     }
     // 覆盖清除行
-    fmt::print(stderr, "\r{}\r", std::string(label.size() + 10, ' '));
+    fmt::print(stderr, "\r{}\r", std::string(label.size() + 6, ' '));
     fflush(stderr);
 }

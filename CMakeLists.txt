@@ -89,7 +89,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     endif()
 
 elseif(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /Gy /Gw /O2)
+    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /Gy /Gw /O2 /utf-8)
     target_link_options(${PROJECT_NAME} PRIVATE /OPT:REF /OPT:ICF /DEBUG:NONE)
 endif()
 

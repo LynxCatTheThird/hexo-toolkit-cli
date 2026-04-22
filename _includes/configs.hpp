@@ -107,9 +107,10 @@ class Node {
     bool has(std::string_view key) const { return scalars.find(key) != scalars.end(); }
 
     // 兼容原有代码的旧接口
-    std::string get(const std::string &key, const std::string &def = "") const {
+    std::string get(std::string_view key, std::string_view def = "") const {
         auto val = get_opt(key);
-        return val.has_value() ? *val : def;
+        if (val.has_value()) return *val;
+        return std::string(def);
     }
 
     double getDouble(const std::string &key, double def) const {
@@ -140,12 +141,13 @@ struct PackageManagerInfo {
     std::string_view lockFile;
     std::string_view name;
     std::string_view commandPrefix;
+    std::string_view upgradeCommand;  // 升级项目依赖的完整命令
 };
 
 inline constexpr PackageManagerInfo PM_TABLE[] = {
-    {"package-lock.json", "npm", "npx "},
-    {"yarn.lock", "yarn", "yarn run "},
-    {"pnpm-lock.yaml", "pnpm", "pnpm exec "},
+    {"package-lock.json", "npm",  "npx ",      "npx rimraf node_modules package-lock.json && ncu -u && npm install"},
+    {"yarn.lock",         "yarn", "yarn run ",  "yarn upgrade --latest"},
+    {"pnpm-lock.yaml",   "pnpm", "pnpm exec ", "pnpm update --latest"},
 };
 
 struct Config {
@@ -220,7 +222,7 @@ struct Config {
 
         // 读取相似度阈值，并进行合理性检查
         double temp_threshold = node.getDouble("similarityThreshold", similarityThreshold);
-        if (temp_threshold > 0.0 && temp_threshold < 1.0) {
+        if (temp_threshold > 0.0 && temp_threshold <= 1.0) {
             similarityThreshold = temp_threshold;
         } else {
             spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
