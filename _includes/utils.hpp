@@ -13,6 +13,7 @@
 #endif
 
 // 根据操作系统的不同指向不同的空设备路径
+// 仅重定向 stdout，stderr 保留输出以便调试
 #if defined(_WIN32)
 inline constexpr std::string_view DEV_NULL = " > NUL";
 #else
@@ -24,9 +25,9 @@ inline constexpr std::string_view DEV_NULL = " > /dev/null";
 //   fileContent: 文件的完整内容字符串
 //   dependencies: 要查找的依赖项
 // 返回值：若字符串中存在指定的依赖项则返回 true，否则返回 false
-inline bool isDependenciesPresent(const std::string &fileContent, const std::string &dependencies) {
+inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependencies) {
     if (fileContent.empty()) return false;
-    return fileContent.find(dependencies) != std::string::npos;
+    return fileContent.find(dependencies) != std::string_view::npos;
 }
 
 // 函数用途：判断给定端口是否处于打开状态
