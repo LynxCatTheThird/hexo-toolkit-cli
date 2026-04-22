@@ -19,6 +19,12 @@
 #include <unistd.h>        // POSIX API
 #endif
 
+// 透明哈希，允许 unordered_map 使用 string_view 直接查找，避免构造临时 std::string
+struct StringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const noexcept { return std::hash<std::string_view>{}(sv); }
+};
+
 // 获取当前可执行文件所在目录
 inline std::filesystem::path getExecutableDir() {
 #if defined(_WIN32)
@@ -39,11 +45,10 @@ inline std::filesystem::path getExecutableDir() {
 #endif
 }
 
-namespace SimpleYAML {
 
 class Node {
    public:
-    std::unordered_map<std::string, std::string> scalars;
+    std::unordered_map<std::string, std::string, StringHash, std::equal_to<>> scalars;
     std::vector<std::pair<std::string, std::string>> additionalTools;
 
     // 传入 string_view 避免拷贝，内部按行切割
@@ -92,14 +97,14 @@ class Node {
 
     // 安全检查
     std::optional<std::string> get_opt(std::string_view key) const {
-        if (auto it = scalars.find(std::string(key)); it != scalars.end()) {
+        if (auto it = scalars.find(key); it != scalars.end()) {
             return it->second;
         }
         return std::nullopt;
     }
 
     // 检查某个键是否存在于配置文件中（用于检测空列表等覆盖情况）
-    bool has(std::string_view key) const { return scalars.find(std::string(key)) != scalars.end(); }
+    bool has(std::string_view key) const { return scalars.find(key) != scalars.end(); }
 
     // 兼容原有代码的旧接口
     std::string get(const std::string &key, const std::string &def = "") const {
@@ -126,30 +131,22 @@ class Node {
             return def;
         }
     }
-
-   private:
-    // 原有的辅助函数已不再被内部调用，但保留以最小化对类定义的侵入
-    static constexpr std::string_view trim(std::string_view s) {
-        size_t start = s.find_first_not_of(" \t\r\n");
-        if (start == std::string_view::npos) return {};
-        s.remove_prefix(start);
-        size_t end = s.find_last_not_of(" \t\r\n");
-        if (end != std::string_view::npos) s.remove_suffix(s.size() - end - 1);
-        return s;
-    }
-
-    static constexpr std::string_view stripQuotes(std::string_view s) {
-        if (s.size() >= 2) {
-            if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
-                s.remove_prefix(1);
-                s.remove_suffix(1);
-            }
-        }
-        return s;
-    }
 };
 
-}  // namespace SimpleYAML
+
+
+// 包管理器信息表，用于表驱动检测
+struct PackageManagerInfo {
+    std::string_view lockFile;
+    std::string_view name;
+    std::string_view commandPrefix;
+};
+
+inline constexpr PackageManagerInfo PM_TABLE[] = {
+    {"package-lock.json", "npm", "npx "},
+    {"yarn.lock", "yarn", "yarn run "},
+    {"pnpm-lock.yaml", "pnpm", "pnpm exec "},
+};
 
 struct Config {
     double similarityThreshold = 0.85;
@@ -159,10 +156,35 @@ struct Config {
 
     bool shouldAutoDetectDependencies = true;  // 自动检测功能开关
 
+    // 包管理器信息
+    std::string packageManager = "npm";
+    std::string packageManagerCommand = "npx ";
+
     void logPathInfo(const std::filesystem::path &configPath) {
         spdlog::debug("配置文件路径: {}", configPath.string());
         spdlog::debug("可执行文件目录: {}", getExecutableDir().string());
         spdlog::debug("当前工作目录: {}", std::filesystem::current_path().string());
+    }
+
+    // 检测使用的包管理器，并自动设置依赖搜索文件
+    void detectPackageManager() {
+        for (const auto &pm : PM_TABLE) {
+            if (std::filesystem::exists(pm.lockFile)) {
+                packageManager = pm.name;
+                packageManagerCommand = pm.commandPrefix;
+                spdlog::debug("检测到包管理器: {}", packageManager);
+                if (shouldAutoDetectDependencies) {
+                    dependenciesSearchingFile = std::string(pm.lockFile);
+                }
+                spdlog::debug("依赖搜索文件设置为: {}", dependenciesSearchingFile);
+                return;
+            }
+        }
+        spdlog::debug("未检测到特定包管理器，默认使用: {}", packageManager);
+        if (shouldAutoDetectDependencies) {
+            dependenciesSearchingFile = "package-lock.json";
+        }
+        spdlog::debug("依赖搜索文件设置为: {}", dependenciesSearchingFile);
     }
 
     void loadFromYamlIfExists(const std::string &filename = "config.yaml") {
@@ -190,7 +212,7 @@ struct Config {
             fin.read(content.data(), size);
         }
 
-        SimpleYAML::Node node;
+        Node node;
         if (!node.parse(content)) {
             spdlog::error("YAML 配置文件 {} 解析失败", configPath.string());
             return;

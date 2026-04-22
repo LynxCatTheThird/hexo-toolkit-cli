@@ -3,8 +3,7 @@
 #include <chrono>      // std::chrono::milliseconds
 #include <cstdio>      // stderr, fflush
 #include <functional>  // std::function
-#include <iomanip>     // std::fixed, std::setprecision
-#include <sstream>     // std::ostringstream
+#include <format>      // std::format
 #include <string>      // std::string
 #include <thread>      // std::this_thread::sleep_for
 
@@ -25,9 +24,7 @@ inline void initLogger() {
 //   precision: 精度
 // 返回值：格式化后的时间字符串
 inline std::string formatDuration(double seconds, int precision = 2) {
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(precision) << seconds;
-    return ss.str();
+    return std::format("{:.{}f}", seconds, precision);
 }
 
 // 函数用途：输出等待转圈动画，直到条件满足为止

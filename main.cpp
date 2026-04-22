@@ -5,7 +5,6 @@
 
 #include "algorithms.hpp"  // 核心算法
 #include "configs.hpp"     // 配置文件解析
-#include "globals.hpp"     // 全局变量与状态
 #include "hexo.hpp"        // Hexo 主体业务
 #include "logs.hpp"        // 日志
 
@@ -15,7 +14,7 @@
 //   input: 传入argv[1]
 // 返回值：若匹配成功则返回 true，否则返回 false
 bool isOrder(std::string_view expectedOrder, std::string_view input) {
-    if (isPrefixOf(expectedOrder, input) || isPrefixOf(input, expectedOrder)) {
+    if (isPrefixOf(input, expectedOrder)) {
         spdlog::debug("子串方法判断成功，识别意图为 {}", expectedOrder);
         return true;
     }
@@ -29,31 +28,7 @@ bool isOrder(std::string_view expectedOrder, std::string_view input) {
     }
 }
 
-// 函数用途：检测使用的包管理器
-// 返回值：无，函数内部会设置全局变量 packageManager 和 packageManagerCommand，并输出检测结果
-void detectPackageManager() {
-    if (std::filesystem::exists("package-lock.json")) {
-        packageManager = "npm";
-        packageManagerCommand = "npx ";
-        spdlog::debug("检测到包管理器: {}", packageManager);
-        return;
-    } else if (std::filesystem::exists("yarn.lock")) {
-        packageManager = "yarn";
-        packageManagerCommand = "yarn run ";
-        spdlog::debug("检测到包管理器: {}", packageManager);
-        return;
-    } else if (std::filesystem::exists("pnpm-lock.yaml")) {
-        packageManager = "pnpm";
-        packageManagerCommand = "pnpm exec ";
-        spdlog::debug("检测到包管理器: {}", packageManager);
-        return;
-    } else {
-        packageManager = "npm";
-        packageManagerCommand = "npx ";
-        spdlog::debug("未检测到特定包管理器，默认使用: {}", packageManager);
-        return;
-    }
-}
+
 
 // 函数用途：显示帮助信息
 void utilHelper() {
@@ -75,20 +50,7 @@ void utilHelper() {
 int main(int argc, char *argv[]) {
     initLogger();
     config.loadFromYamlIfExists();
-    detectPackageManager();
-
-    // 根据检测到的包管理器自动设置依赖搜索文件
-    if (config.shouldAutoDetectDependencies) {  // 如果未在配置文件中指定，则自动设置
-        if (packageManager == "npm")
-            config.dependenciesSearchingFile = "package-lock.json";
-        else if (packageManager == "yarn")
-            config.dependenciesSearchingFile = "yarn.lock";
-        else if (packageManager == "pnpm")
-            config.dependenciesSearchingFile = "pnpm-lock.yaml";
-        else
-            config.dependenciesSearchingFile = "package.json";
-    }
-    spdlog::debug("依赖搜索文件设置为: {}", config.dependenciesSearchingFile);
+    config.detectPackageManager();
 
     if (argc == 1) {
         spdlog::error("请输入参数");
@@ -102,14 +64,14 @@ int main(int argc, char *argv[]) {
         std::system("git submodule update --remote --merge");
     } else if (isOrder("packages", argv[1])) {
         std::string command;
-        if (packageManager == "yarn") {
+        if (config.packageManager == "yarn") {
             command = "yarn upgrade --latest";
-        } else if (packageManager == "pnpm") {
+        } else if (config.packageManager == "pnpm") {
             command = "pnpm update --latest";
         } else {
             command = "npx rimraf node_modules package-lock.json && ncu -u && npm install";  // 默认
         }
-        spdlog::debug("检测到包管理器: {}", packageManager);
+        spdlog::debug("检测到包管理器: {}", config.packageManager);
         std::system(command.c_str());
     } else {
         spdlog::error("无效的参数：所有判断都失败了，无法判断命令意图");
