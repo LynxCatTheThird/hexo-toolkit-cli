@@ -107,29 +107,29 @@ class Node {
     bool has(std::string_view key) const { return scalars.find(key) != scalars.end(); }
 
     // 兼容原有代码的旧接口
-    std::string get(std::string_view key, std::string_view def = "") const {
-        auto val = get_opt(key);
-        if (val.has_value()) return *val;
-        return std::string(def);
+    std::string get(std::string_view key, std::string_view defaultValue = "") const {
+        auto value = get_opt(key);
+        if (value.has_value()) return *value;
+        return std::string(defaultValue);
     }
 
-    double getDouble(const std::string &key, double def) const {
-        auto val = get_opt(key);
-        if (!val.has_value() || val->empty()) return def;
+    double getDouble(const std::string &key, double defaultValue) const {
+        auto value = get_opt(key);
+        if (!value.has_value() || value->empty()) return defaultValue;
         try {
-            return std::stod(*val);
+            return std::stod(*value);
         } catch (...) {
-            return def;
+            return defaultValue;
         }
     }
 
-    short getShort(const std::string &key, short def) const {
-        auto val = get_opt(key);
-        if (!val.has_value() || val->empty()) return def;
+    short getShort(const std::string &key, short defaultValue) const {
+        auto value = get_opt(key);
+        if (!value.has_value() || value->empty()) return defaultValue;
         try {
-            return static_cast<short>(std::stoi(*val));
+            return static_cast<short>(std::stoi(*value));
         } catch (...) {
-            return def;
+            return defaultValue;
         }
     }
 };
@@ -198,20 +198,20 @@ struct Config {
         }
 
         // 使用二进制模式打开以获得更快的读取速度
-        std::ifstream fin(configPath, std::ios::in | std::ios::binary);
-        if (!fin) {
+        std::ifstream fileInput(configPath, std::ios::in | std::ios::binary);
+        if (!fileInput) {
             spdlog::warn("配置文件 {} 无法读取，使用默认值", configPath.string());
             return;
         }
 
         // 一次性读取文件内容，比 istreambuf_iterator 逐字符读取快得多
-        fin.seekg(0, std::ios::end);
-        std::streamsize size = fin.tellg();
+        fileInput.seekg(0, std::ios::end);
+        std::streamsize size = fileInput.tellg();
         std::string content;
         if (size > 0) {
             content.resize(static_cast<size_t>(size));
-            fin.seekg(0, std::ios::beg);
-            fin.read(content.data(), size);
+            fileInput.seekg(0, std::ios::beg);
+            fileInput.read(content.data(), size);
         }
 
         Node node;
@@ -221,9 +221,9 @@ struct Config {
         }
 
         // 读取相似度阈值，并进行合理性检查
-        double temp_threshold = node.getDouble("similarityThreshold", similarityThreshold);
-        if (temp_threshold > 0.0 && temp_threshold <= 1.0) {
-            similarityThreshold = temp_threshold;
+        double temporaryThreshold = node.getDouble("similarityThreshold", similarityThreshold);
+        if (temporaryThreshold > 0.0 && temporaryThreshold <= 1.0) {
+            similarityThreshold = temporaryThreshold;
         } else {
             spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
         }

@@ -39,7 +39,7 @@ FetchContent_MakeAvailable(rapidyaml)
 FetchContent_Declare(
     mimalloc
     GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-    GIT_TAG        v3.3.0
+    GIT_TAG        v3.3.1
     GIT_SHALLOW    ON
 )
 # 关闭 mimalloc 自身的测试和没必要的构建目标
