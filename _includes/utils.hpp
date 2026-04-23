@@ -41,10 +41,10 @@ inline bool isDependenciesPresent(std::string_view fileContent, std::string_view
     return fileContent.find(dependencies) != std::string_view::npos;
 }
 
-// 函数用途：判断给定端口是否处于打开状态
+// 函数用途：判断给定端口是否已被占用（即能够成功连接）
 // 参数：port - 待判断的端口号
-// 返回值：若端口打开则返回true，否则返回false
-inline bool isPortOpen(int port) {
+// 返回值：若端口已被占用（有进程在监听）则返回 true，否则返回 false
+inline bool isPortInUse(int port) {
 #if defined(_WIN32)
     // 保证局部 static 的初始化是线程安全的，Winsock 只会初始化一次
     static detail::WinsockInit winsockInitialization;
@@ -74,10 +74,4 @@ inline bool isPortOpen(int port) {
     return isOpen;
 }
 
-// 用于异步执行系统命令
-// 输入：const std::string& command - 要执行的命令
-// 输出：int - 命令执行的返回值
-inline int executeCommand(const std::string &command) {
-    // 调用系统命令执行函数执行给定的命令
-    return std::system(command.c_str());
-}
+

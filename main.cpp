@@ -58,12 +58,14 @@ int main(int argc, char *argv[]) {
     } else if (isOrder("server", argv[1])) {
         hexoServer();
     } else if (isOrder("theme", argv[1])) {
-        std::system("git submodule update --remote --merge");
+        int submoduleExitCode = std::system("git submodule update --remote --merge");
+        if (submoduleExitCode != 0) spdlog::error("git submodule 更新失败，退出码: {}", submoduleExitCode);
     } else if (isOrder("packages", argv[1])) {
         spdlog::debug("检测到包管理器: {}", config.packageManager);
         for (const auto &pm : PM_TABLE) {
             if (config.packageManager == pm.name) {
-                std::system(std::string(pm.upgradeCommand).c_str());
+                int pmExitCode = std::system(std::string(pm.upgradeCommand).c_str());
+                if (pmExitCode != 0) spdlog::error("包管理器 {} 更新失败，退出码: {}", pm.name, pmExitCode);
                 break;
             }
         }

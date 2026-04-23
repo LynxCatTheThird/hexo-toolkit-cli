@@ -22,22 +22,24 @@ inline void hexoServer() {
     hexoClean();
     for (int portNumber = 4000; portNumber <= 65535; portNumber++) {
         std::string command = std::format("{}hexo server --port {}{}", config.packageManagerCommand, portNumber, DEV_NULL);
-        if (!isPortOpen(portNumber)) {
+        if (!isPortInUse(portNumber)) {
             spdlog::info("正在尝试于 {} 端口启动 Hexo 本地预览服务器... ", portNumber);
             auto serverStart = std::chrono::high_resolution_clock::now();  // 开始记录 hexo server 启动时间
-            std::future<int> resultFuture = std::async(std::launch::async, executeCommand, command);
+            std::future<int> resultFuture = std::async(std::launch::async,
+                [&command] { return std::system(command.c_str()); });
 
             waitWithSpinner("等待 Hexo 本地预览服务器启动...", [&]() {
                 if (resultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     return true;  // 服务器进程在端口开放前结束，可能是启动失败，直接结束等待
                 }
-                return isPortOpen(portNumber);
+                return isPortInUse(portNumber);
             });
 
             // 检查服务器进程是否意外结束
             if (resultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 int exitCode = resultFuture.get();
                 spdlog::error("Hexo 服务器启动失败或意外退出，退出码: {}", exitCode);
+                // 注意：std::async 返回的 future 析构时会阻塞等待线程结束（标准保证）
                 break;
             }
 
@@ -68,7 +70,10 @@ inline void hexoBuild() {
     auto generateStart = std::chrono::high_resolution_clock::now();  // 开始记录 Generate 时间
     int generateExitCode = std::system(std::format("{}hexo generate{}", config.packageManagerCommand, DEV_NULL).c_str());
     auto generateEnd = std::chrono::high_resolution_clock::now();  // 结束记录 Generate 时间
-    if (generateExitCode != 0) spdlog::error("hexo generate 失败，退出码: {}", generateExitCode);
+    if (generateExitCode != 0) {
+        spdlog::error("hexo generate 失败，退出码: {}，中止后续部署操作", generateExitCode);
+        return;
+    }
 
     // 如果配置了附属工具，则执行它们
     if (config.additionalTools.empty()) {

@@ -113,7 +113,7 @@ class Node {
         return std::string(defaultValue);
     }
 
-    double getDouble(const std::string &key, double defaultValue) const {
+    double getDouble(std::string_view key, double defaultValue) const {
         auto value = get_opt(key);
         if (!value.has_value() || value->empty()) return defaultValue;
         try {
@@ -123,11 +123,16 @@ class Node {
         }
     }
 
-    short getShort(const std::string &key, short defaultValue) const {
+    short getShort(std::string_view key, short defaultValue) const {
         auto value = get_opt(key);
         if (!value.has_value() || value->empty()) return defaultValue;
         try {
-            return static_cast<short>(std::stoi(*value));
+            int intVal = std::stoi(*value);
+            if (intVal < std::numeric_limits<short>::min() || intVal > std::numeric_limits<short>::max()) {
+                spdlog::warn("配置项 '{}' 的值 {} 超出 short 范围，保留默认值 {}", key, intVal, defaultValue);
+                return defaultValue;
+            }
+            return static_cast<short>(intVal);
         } catch (...) {
             return defaultValue;
         }
@@ -235,13 +240,12 @@ struct Config {
             spdlog::info("正在使用自定义依赖文件: {}", dependenciesSearchingFile);
         }
 
-        // 读取附属工具列表，只要键存在或列表不为空，即接管配置
-        if (node.has("additionalTools") || !node.additionalTools.empty()) {
-            additionalTools.clear();  // 清空默认工具列表
-
+        // 只要 YAML 中声明了 additionalTools 键（哪怕是空列表），即接管默认配置
+        if (node.has("additionalTools")) {
+            additionalTools.clear();
             if (!node.additionalTools.empty()) {
                 spdlog::info("加载了 {} 个扩展工具", node.additionalTools.size());
-                additionalTools = std::move(node.additionalTools);  // 移动语义优化
+                additionalTools = std::move(node.additionalTools);
             } else {
                 spdlog::info("检测到空的 additionalTools 配置，已清空内置扩展工具");
             }
