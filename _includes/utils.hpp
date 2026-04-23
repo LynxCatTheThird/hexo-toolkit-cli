@@ -47,28 +47,28 @@ inline bool isDependenciesPresent(std::string_view fileContent, std::string_view
 inline bool isPortOpen(int port) {
 #if defined(_WIN32)
     // 保证局部 static 的初始化是线程安全的，Winsock 只会初始化一次
-    static detail::WinsockInit wsaInit;
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == INVALID_SOCKET) return false;
+    static detail::WinsockInit winsockInitialization;
+    SOCKET socketDescriptor = socket(AF_INET, SOCK_STREAM, 0);
+    if (socketDescriptor == INVALID_SOCKET) return false;
 #else
-    int sock = socket(AF_INET, SOCK_STREAM, 0);  // 创建一个套接字
-    if (sock < 0) return false;                  // 若创建套接字失败返回端口未打开
+    int socketDescriptor = socket(AF_INET, SOCK_STREAM, 0);  // 创建一个套接字
+    if (socketDescriptor < 0) return false;                  // 若创建套接字失败返回端口未打开
 #endif
 
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;                      // 地址族为IPv4
-    addr.sin_port = htons(port);                    // 设置端口号
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // 设置为本地回环地址
+    struct sockaddr_in serverAddress;
+    serverAddress.sin_family = AF_INET;                      // 地址族为IPv4
+    serverAddress.sin_port = htons(port);                    // 设置端口号
+    serverAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // 设置为本地回环地址
 
     bool isOpen = false;  // 初始化端口状态为未打开
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+    if (connect(socketDescriptor, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) == 0) {
         isOpen = true;  // 连接成功，端口被占用
     }
 
 #if defined(_WIN32)
-    closesocket(sock);  // 关闭套接字（WSACleanup 由 ~WinsockInit 负责）
+    closesocket(socketDescriptor);  // 关闭套接字（WSACleanup 由 ~WinsockInit 负责）
 #else
-    close(sock);  // 关闭套接字
+    close(socketDescriptor);  // 关闭套接字
 #endif
 
     return isOpen;

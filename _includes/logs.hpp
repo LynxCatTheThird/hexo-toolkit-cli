@@ -43,10 +43,10 @@ inline void waitWithSpinner(std::string_view label, std::function<bool()> predic
     while (!predicate()) {
         // 每隔若干次（可调）输出一个 spinner 字符，避免频繁刷新
         if (count % 10 == 0) {
-            int idx = (count / 10) % (sizeof(spinner) - 1);
+            int spinnerIndex = (count / 10) % (sizeof(spinner) - 1);
             // 使用 fmt 库做到跨平台安全输出，且自动兼容老旧 Windows CMD
             fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r[W] {} {}", label,
-                       spinner[idx]);
+                       spinner[spinnerIndex]);
             fflush(stderr);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
