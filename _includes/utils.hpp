@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdlib>      // std::system
+#include <filesystem>   // std::filesystem
+#include <fstream>      // std::ifstream
 #include <string>       // std::string
 #include <string_view>  // std::string_view
 
@@ -20,15 +22,16 @@ struct WinsockInit {
 
 #else
 #include <netinet/in.h>  // AF_INET, INADDR_LOOPBACK
+#include <sys/wait.h>    // WIFEXITED, WEXITSTATUS
 #include <unistd.h>      // close()
 #endif
 
 // 根据操作系统的不同指向不同的空设备路径
 // 仅重定向 stdout，stderr 保留输出以便调试
 #if defined(_WIN32)
-inline constexpr std::string_view DEV_NULL = " > NUL";
+inline constexpr std::string_view DEVICE_NULL = " > NUL";
 #else
-inline constexpr std::string_view DEV_NULL = " > /dev/null";
+inline constexpr std::string_view DEVICE_NULL = " > /dev/null";
 #endif
 
 // 函数用途：检查缓存的文件内容中是否存在特定依赖项
@@ -74,4 +77,31 @@ inline bool isPortInUse(int port) {
     return isOpen;
 }
 
+// 函数用途：跨平台执行系统命令并返回真实的退出码
+// 参数：
+//   command: 要执行的命令行指令
+// 返回值：命令执行完毕后的实际退出状态码
+inline int runCommand(const std::string &command) {
+    int status = std::system(command.c_str());
+#if defined(_WIN32)
+    return status;
+#else
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+}
 
+// 函数用途：一次性读取整个文件内容
+// 参数：
+//   path: 要读取的目标文件路径
+// 返回值：包含文件所有内容的 std::string，如果读取失败则返回空字符串
+inline std::string readFileContents(const std::filesystem::path &path) {
+    std::ifstream file(path, std::ios::in | std::ios::binary);
+    if (!file) return {};
+    file.seekg(0, std::ios::end);
+    std::streamsize size = file.tellg();
+    if (size <= 0) return {};
+    std::string content(static_cast<size_t>(size), '\0');
+    file.seekg(0, std::ios::beg);
+    file.read(content.data(), size);
+    return content;
+}

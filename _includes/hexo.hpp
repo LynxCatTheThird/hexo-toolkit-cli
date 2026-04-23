@@ -1,9 +1,8 @@
 #pragma once
 
-#include <chrono>   // std::chrono::high_resolution_clock
-#include <cstdlib>  // std::system
-#include <future>   // std::future, std::async
-#include <string>   // std::string
+#include <chrono>  // std::chrono::high_resolution_clock
+#include <future>  // std::future, std::async
+#include <string>  // std::string
 
 #include "configs.hpp"  // 配置文件解析
 #include "logs.hpp"     // 日志
@@ -12,28 +11,30 @@
 // 函数用途：清理 Hexo 产生的缓存文件
 inline void hexoClean() {
     spdlog::info("清理 Hexo 缓存文件...");
-    int returnCode = std::system(std::format("{}hexo clean{}", config.packageManagerCommand, DEV_NULL).c_str());
+    int returnCode = runCommand(std::format("{}hexo clean{}", config.packageManagerCommand, DEVICE_NULL));
     if (returnCode != 0) spdlog::warn("hexo clean 异常退出，退出码: {}", returnCode);
 }
 
 // 函数用途：启动 Hexo 本地预览服务器
 inline void hexoServer() {
-    auto totalStart = std::chrono::high_resolution_clock::now();  // 开始记录总执行时间
+    ScopedTimer totalTimer("本次操作执行总");
     hexoClean();
     for (int portNumber = 4000; portNumber <= 65535; portNumber++) {
-        std::string command = std::format("{}hexo server --port {}{}", config.packageManagerCommand, portNumber, DEV_NULL);
+        std::string command =
+            std::format("{}hexo server --port {}{}", config.packageManagerCommand, portNumber, DEVICE_NULL);
         if (!isPortInUse(portNumber)) {
             spdlog::info("正在尝试于 {} 端口启动 Hexo 本地预览服务器... ", portNumber);
-            auto serverStart = std::chrono::high_resolution_clock::now();  // 开始记录 hexo server 启动时间
-            std::future<int> resultFuture = std::async(std::launch::async,
-                [&command] { return std::system(command.c_str()); });
+            std::future<int> resultFuture = std::async(std::launch::async, [&command] { return runCommand(command); });
 
-            waitWithSpinner("等待 Hexo 本地预览服务器启动...", [&]() {
-                if (resultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    return true;  // 服务器进程在端口开放前结束，可能是启动失败，直接结束等待
-                }
-                return isPortInUse(portNumber);
-            });
+            {
+                ScopedTimer startupTimer("Hexo 本地预览服务器启动");
+                waitWithSpinner("等待 Hexo 本地预览服务器启动...", [&]() {
+                    if (resultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                        return true;  // 服务器进程在端口开放前结束，可能是启动失败，直接结束等待
+                    }
+                    return isPortInUse(portNumber);
+                });
+            }
 
             // 检查服务器进程是否意外结束
             if (resultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -43,10 +44,7 @@ inline void hexoServer() {
                 break;
             }
 
-            // 服务器成功启动，记录时间并输出信息
-            auto serverEnd = std::chrono::high_resolution_clock::now();             // 结束记录 hexo server 启动时间
-            std::chrono::duration<double> serverElapsed = serverEnd - serverStart;  // 计算 hexo server 启动时间
-            spdlog::debug("Hexo 本地预览服务器启动用时: {} 秒", formatDuration(serverElapsed.count(), 3));
+            // 服务器成功启动，输出信息
             spdlog::info("您现在可以访问 http://localhost:{} 预览效果了", portNumber);
 
             // 阻塞，等待用户自己关掉服务器进程
@@ -57,22 +55,20 @@ inline void hexoServer() {
             spdlog::error("{} 端口已被占用，尝试使用下一个端口...", portNumber);
         }
     }
-    auto totalEnd = std::chrono::high_resolution_clock::now();           // 结束记录总执行时间
-    std::chrono::duration<double> totalElapsed = totalEnd - totalStart;  // 计算总执行时间
-    spdlog::info("本次操作执行总用时: {} 秒", formatDuration(totalElapsed.count(), 3));
 }
 
 // 函数用途：部署 Hexo 静态文件
 inline void hexoBuild() {
-    auto totalStart = std::chrono::high_resolution_clock::now();  // 开始记录总执行时间
+    ScopedTimer totalTimer("本次操作执行总");
     hexoClean();
     spdlog::info("生成静态文件...");
-    auto generateStart = std::chrono::high_resolution_clock::now();  // 开始记录 Generate 时间
-    int generateExitCode = std::system(std::format("{}hexo generate{}", config.packageManagerCommand, DEV_NULL).c_str());
-    auto generateEnd = std::chrono::high_resolution_clock::now();  // 结束记录 Generate 时间
-    if (generateExitCode != 0) {
-        spdlog::error("hexo generate 失败，退出码: {}，中止后续部署操作", generateExitCode);
-        return;
+    {
+        ScopedTimer generateTimer("生成静态文件");
+        int generateExitCode = runCommand(std::format("{}hexo generate{}", config.packageManagerCommand, DEVICE_NULL));
+        if (generateExitCode != 0) {
+            spdlog::error("hexo generate 失败，退出码: {}，中止后续部署操作", generateExitCode);
+            return;
+        }
     }
 
     // 如果配置了附属工具，则执行它们
@@ -80,45 +76,31 @@ inline void hexoBuild() {
         spdlog::info("未配置附属工具，跳过执行");
     } else {
         spdlog::info("执行附属命令...");
-        auto additionalStart = std::chrono::high_resolution_clock::now();
-        
+        ScopedTimer additionalTimer("附属工具");
+
         // 一次性读取并缓存依赖文件内容，避免在循环中重复读取磁盘
-        std::string dependencyContent;
-        std::ifstream dependencyFile(config.dependenciesSearchingFile, std::ios::binary);
-        if (dependencyFile) {
-            dependencyFile.seekg(0, std::ios::end);
-            std::streamsize size = dependencyFile.tellg();
-            if (size > 0) {
-                dependencyContent.resize(static_cast<size_t>(size));
-                dependencyFile.seekg(0, std::ios::beg);
-                dependencyFile.read(dependencyContent.data(), size);
-            }
-        } else {
-            spdlog::warn("无法打开依赖文件 {}", config.dependenciesSearchingFile);
+        std::string dependencyContent = readFileContents(config.dependenciesSearchingFile);
+        if (dependencyContent.empty()) {
+            spdlog::warn("无法打开或读取依赖文件 {}", config.dependenciesSearchingFile);
         }
 
         for (const auto &[keyword, command] : config.additionalTools) {
             if (isDependenciesPresent(dependencyContent, keyword)) {
                 spdlog::info("正在执行 {} ...", keyword);
-                int toolExitCode = std::system(std::format("{}{}{}", config.packageManagerCommand, command, DEV_NULL).c_str());
+                int toolExitCode =
+                    runCommand(std::format("{}{}{}", config.packageManagerCommand, command, DEVICE_NULL));
                 if (toolExitCode != 0) spdlog::warn("附属工具 {} 执行异常，退出码: {}", keyword, toolExitCode);
             } else {
                 spdlog::warn("本地项目中未安装 {} 或检索出错，跳过执行", keyword);
             }
         }
-        auto additionalEnd = std::chrono::high_resolution_clock::now();
-
-        std::chrono::duration<double> additionalElapsed = additionalEnd - additionalStart;
-        spdlog::info("附属工具执行完毕，用时: {} 秒", formatDuration(additionalElapsed.count(), 3));
     }
 
     spdlog::info("部署静态文件...");
-    int deployExitCode = std::system(std::format("{}hexo d{}", config.packageManagerCommand, DEV_NULL).c_str());
-    if (deployExitCode != 0) spdlog::error("hexo deploy 失败，退出码: {}", deployExitCode);
-    hexoClean();
-    auto totalEnd = std::chrono::high_resolution_clock::now();                    // 结束记录总执行时间
-    std::chrono::duration<double> generateElapsed = generateEnd - generateStart;  // 计算 Generate 时间
-    spdlog::debug("生成静态文件用时: {} 秒", formatDuration(generateElapsed.count(), 3));
-    std::chrono::duration<double> totalElapsed = totalEnd - totalStart;  // 计算总执行时间
-    spdlog::debug("本次操作执行总用时: {} 秒", formatDuration(totalElapsed.count(), 3));
+    int deployExitCode = runCommand(std::format("{}hexo d{}", config.packageManagerCommand, DEVICE_NULL));
+    if (deployExitCode != 0) {
+        spdlog::error("hexo deploy 失败，退出码: {}", deployExitCode);
+    } else {
+        hexoClean();
+    }
 }
