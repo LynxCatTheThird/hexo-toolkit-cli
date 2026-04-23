@@ -1,16 +1,16 @@
 #pragma once
 
 #include <filesystem>     // std::filesystem
-#include <fstream>        // std::ifstream
 #include <optional>       // std::optional, std::nullopt
 #include <string>         // std::string
 #include <string_view>    // std::string_view
 #include <unordered_map>  // std::unordered_map
 #include <vector>         // std::vector, std::pair
 
-#include "ryml.hpp"      // IWYU pragma: keep // rapidyaml 核心
-#include "ryml_std.hpp"  // IWYU pragma: keep // rapidyaml std::string 支持
-#include "spdlog/spdlog.h"
+#include "ryml.hpp"         // IWYU pragma: keep // rapidyaml 核心
+#include "ryml_std.hpp"     // IWYU pragma: keep // rapidyaml std::string 支持
+#include "spdlog/spdlog.h"  // spdlog::warn
+#include "utils.hpp"        // 工具函数
 
 #if defined(_WIN32)
 #include <windows.h>  // Windows API
@@ -22,15 +22,18 @@
 // 透明哈希，允许 unordered_map 使用 string_view 直接查找，避免构造临时 std::string
 struct StringHash {
     using is_transparent = void;
-    size_t operator()(std::string_view sv) const noexcept { return std::hash<std::string_view>{}(sv); }
+    size_t operator()(std::string_view stringView) const noexcept { return std::hash<std::string_view>{}(stringView); }
 };
 
 // 获取当前可执行文件所在目录
 inline std::filesystem::path getExecutableDir() {
 #if defined(_WIN32)
     wchar_t buffer[MAX_PATH + 1];
-    DWORD len = GetModuleFileNameW(NULL, buffer, MAX_PATH);
-    buffer[len] = L'\0';
+    DWORD length = GetModuleFileNameW(NULL, buffer, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return std::filesystem::current_path();
+    }
+    buffer[length] = L'\0';
     return std::filesystem::path(buffer).parent_path();
 #elif defined(__linux__)
     char buffer[PATH_MAX];
@@ -44,7 +47,6 @@ inline std::filesystem::path getExecutableDir() {
     return std::filesystem::current_path();
 #endif
 }
-
 
 class Node {
    public:
@@ -69,14 +71,14 @@ class Node {
                     // 记录键，用于下方 has() 判断覆盖情况
                     scalars[key] = "";
 
-                    // 解析 - [k, v] 格式的数组
+                    // 解析 - [itemKey, itemValue] 格式的数组，用于额外工具列表
                     if (child.is_seq() && key == "additionalTools") {
                         for (auto item : child.children()) {
                             if (item.is_seq() && item.num_children() >= 2) {
-                                std::string k, v;
-                                item[0] >> k;
-                                item[1] >> v;
-                                additionalTools.emplace_back(k, v);
+                                std::string itemKey, itemValue;
+                                item[0] >> itemKey;
+                                item[1] >> itemValue;
+                                additionalTools.emplace_back(itemKey, itemValue);
                             }
                         }
                     }
@@ -88,15 +90,19 @@ class Node {
                     }
                 }
             }
+        } catch (const std::exception &exception) {
+            spdlog::error("YAML 解析异常: {}", exception.what());
+            return false;
         } catch (...) {
             // rapidyaml 在语法错误时可能会抛出异常或触发断言
+            spdlog::error("YAML 解析遇到未知异常");
             return false;
         }
         return true;
     }
 
-    // 安全检查
-    std::optional<std::string> get_opt(std::string_view key) const {
+    // 安全检查，尝试获取配置项的值，如果不存在则返回 std::nullopt
+    std::optional<std::string> getOptional(std::string_view key) const {
         if (auto it = scalars.find(key); it != scalars.end()) {
             return it->second;
         }
@@ -106,40 +112,46 @@ class Node {
     // 检查某个键是否存在于配置文件中（用于检测空列表等覆盖情况）
     bool has(std::string_view key) const { return scalars.find(key) != scalars.end(); }
 
-    // 兼容原有代码的旧接口
+    // 获取字符串配置项，若不存在则返回 defaultValue
     std::string get(std::string_view key, std::string_view defaultValue = "") const {
-        auto value = get_opt(key);
+        auto value = getOptional(key);
         if (value.has_value()) return *value;
         return std::string(defaultValue);
     }
 
+    // 获取双精度浮点数配置项
     double getDouble(std::string_view key, double defaultValue) const {
-        auto value = get_opt(key);
+        auto value = getOptional(key);
         if (!value.has_value() || value->empty()) return defaultValue;
         try {
             return std::stod(*value);
+        } catch (const std::exception &exception) {
+            spdlog::warn("配置项 '{}' 转换为 double 异常: {}", key, exception.what());
+            return defaultValue;
         } catch (...) {
             return defaultValue;
         }
     }
 
+    // 获取短整数配置项
     short getShort(std::string_view key, short defaultValue) const {
-        auto value = get_opt(key);
+        auto value = getOptional(key);
         if (!value.has_value() || value->empty()) return defaultValue;
         try {
-            int intVal = std::stoi(*value);
-            if (intVal < std::numeric_limits<short>::min() || intVal > std::numeric_limits<short>::max()) {
-                spdlog::warn("配置项 '{}' 的值 {} 超出 short 范围，保留默认值 {}", key, intVal, defaultValue);
+            int integerValue = std::stoi(*value);
+            if (integerValue < std::numeric_limits<short>::min() || integerValue > std::numeric_limits<short>::max()) {
+                spdlog::warn("配置项 '{}' 的值 {} 超出 short 范围，保留默认值 {}", key, integerValue, defaultValue);
                 return defaultValue;
             }
-            return static_cast<short>(intVal);
+            return static_cast<short>(integerValue);
+        } catch (const std::exception &exception) {
+            spdlog::warn("配置项 '{}' 转换为 short 异常: {}", key, exception.what());
+            return defaultValue;
         } catch (...) {
             return defaultValue;
         }
     }
 };
-
-
 
 // 包管理器信息表，用于表驱动检测
 struct PackageManagerInfo {
@@ -150,9 +162,9 @@ struct PackageManagerInfo {
 };
 
 inline constexpr PackageManagerInfo PM_TABLE[] = {
-    {"package-lock.json", "npm",  "npx ",      "npx rimraf node_modules package-lock.json && ncu -u && npm install"},
-    {"yarn.lock",         "yarn", "yarn run ",  "yarn upgrade --latest"},
-    {"pnpm-lock.yaml",   "pnpm", "pnpm exec ", "pnpm update --latest"},
+    {"package-lock.json", "npm", "npx ", "npx rimraf node_modules package-lock.json && ncu -u && npm install"},
+    {"yarn.lock", "yarn", "yarn run ", "yarn upgrade --latest"},
+    {"pnpm-lock.yaml", "pnpm", "pnpm exec ", "pnpm update --latest"},
 };
 
 struct Config {
@@ -166,6 +178,7 @@ struct Config {
     // 包管理器信息
     std::string packageManager = "npm";
     std::string packageManagerCommand = "npx ";
+    std::string upgradeCommand = "npx rimraf node_modules package-lock.json && ncu -u && npm install";
 
     void logPathInfo(const std::filesystem::path &configPath) {
         spdlog::debug("配置文件路径: {}", configPath.string());
@@ -175,13 +188,14 @@ struct Config {
 
     // 检测使用的包管理器，并自动设置依赖搜索文件
     void detectPackageManager() {
-        for (const auto &pm : PM_TABLE) {
-            if (std::filesystem::exists(pm.lockFile)) {
-                packageManager = pm.name;
-                packageManagerCommand = pm.commandPrefix;
+        for (const auto &packageManagerInfo : PM_TABLE) {
+            if (std::filesystem::exists(packageManagerInfo.lockFile)) {
+                packageManager = packageManagerInfo.name;
+                packageManagerCommand = packageManagerInfo.commandPrefix;
+                upgradeCommand = std::string(packageManagerInfo.upgradeCommand);
                 spdlog::debug("检测到包管理器: {}", packageManager);
                 if (shouldAutoDetectDependencies) {
-                    dependenciesSearchingFile = std::string(pm.lockFile);
+                    dependenciesSearchingFile = std::string(packageManagerInfo.lockFile);
                 }
                 spdlog::debug("依赖搜索文件设置为: {}", dependenciesSearchingFile);
                 return;
@@ -203,20 +217,10 @@ struct Config {
         }
 
         // 使用二进制模式打开以获得更快的读取速度
-        std::ifstream fileInput(configPath, std::ios::in | std::ios::binary);
-        if (!fileInput) {
-            spdlog::warn("配置文件 {} 无法读取，使用默认值", configPath.string());
+        std::string content = readFileContents(configPath);
+        if (content.empty()) {
+            spdlog::warn("配置文件 {} 无法读取或为空，使用默认值", configPath.string());
             return;
-        }
-
-        // 一次性读取文件内容，比 istreambuf_iterator 逐字符读取快得多
-        fileInput.seekg(0, std::ios::end);
-        std::streamsize size = fileInput.tellg();
-        std::string content;
-        if (size > 0) {
-            content.resize(static_cast<size_t>(size));
-            fileInput.seekg(0, std::ios::beg);
-            fileInput.read(content.data(), size);
         }
 
         Node node;

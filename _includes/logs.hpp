@@ -27,35 +27,50 @@ inline std::string formatDuration(double seconds, int precision = 2) {
     return std::format("{:.{}f}", seconds, precision);
 }
 
+// 函数用途：RAII 计时器，离开作用域时自动打印总用时
+class ScopedTimer {
+    std::string label;
+    std::chrono::high_resolution_clock::time_point startTime;
+
+   public:
+    explicit ScopedTimer(std::string_view labelText)
+        : label(labelText), startTime(std::chrono::high_resolution_clock::now()) {}
+    ~ScopedTimer() {
+        auto elapsed = std::chrono::high_resolution_clock::now() - startTime;
+        double seconds = std::chrono::duration<double>(elapsed).count();
+        spdlog::debug("{}用时: {} 秒", label, formatDuration(seconds, 3));
+    }
+};
+
 // 函数用途：输出等待转圈动画，直到条件满足为止
 // 参数：
-//   label       —— 显示在转圈动画前的标签文字
-//   predicate   —— 一个返回 bool 的函数对象；返回 true 表示结束等待
-//   interval_ms —— 每次轮询的时间间隔（毫秒），默认为 50ms
+//   label                —— 显示在转圈动画前的标签文字
+//   predicate            —— 一个返回 bool 的函数对象；返回 true 表示结束等待
+//   intervalMilliseconds —— 每次轮询的时间间隔（毫秒），默认为 50ms
 // 返回值：无
-template <std::invocable Pred>
-inline void waitWithSpinner(std::string_view label, Pred &&predicate, int interval_ms = 50) {
+template <std::invocable Predicate>
+inline void waitWithSpinner(std::string_view label, Predicate &&predicate, int intervalMilliseconds = 50) {
     // 转圈动画帧序列：
     //   Windows  → ASCII（兼容老式 CMD/PowerShell）
     //   其他平台 → Braille 点阵（与 npm/yarn/pnpm 风格一致）
 #if defined(_WIN32)
-    static constexpr std::string_view kSpinnerFrames[] = {"|", "/", "-", "\\"};
+    static constexpr std::string_view spinnerFrames[] = {"|", "/", "-", "\\"};
 #else
-    static constexpr std::string_view kSpinnerFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+    static constexpr std::string_view spinnerFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
 #endif
-    static constexpr size_t kFrameCount = std::size(kSpinnerFrames);
-    int count = 0;
+    static constexpr size_t frameCount = std::size(spinnerFrames);
+    size_t count = 0;
 
     // 当 predicate() 返回 false 时持续等待
     while (!predicate()) {
         // 每隔若干次（可调）输出一个 spinner 字符，避免频繁刷新
         if (count % 10 == 0) {
-            int spinnerIndex = (count / 10) % static_cast<int>(kFrameCount);
+            int spinnerIndex = (count / 10) % static_cast<int>(frameCount);
             fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r[W] {} {}", label,
-                       kSpinnerFrames[spinnerIndex]);
+                       spinnerFrames[spinnerIndex]);
             fflush(stderr);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+        std::this_thread::sleep_for(std::chrono::milliseconds(intervalMilliseconds));
         ++count;
     }
     // 覆盖清除行
