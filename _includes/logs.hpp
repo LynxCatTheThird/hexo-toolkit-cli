@@ -3,7 +3,6 @@
 #include <chrono>       // std::chrono::milliseconds
 #include <cstdio>       // stderr, fflush
 #include <format>       // std::format
-#include <functional>   // std::function
 #include <string>       // std::string
 #include <string_view>  // std::string_view
 #include <thread>       // std::this_thread::sleep_for
@@ -32,21 +31,28 @@ inline std::string formatDuration(double seconds, int precision = 2) {
 // 参数：
 //   label       —— 显示在转圈动画前的标签文字
 //   predicate   —— 一个返回 bool 的函数对象；返回 true 表示结束等待
-//   interval_ms —— 每次轮询的时间间隔（毫秒），默认为 100ms
+//   interval_ms —— 每次轮询的时间间隔（毫秒），默认为 50ms
 // 返回值：无
-inline void waitWithSpinner(std::string_view label, std::function<bool()> predicate, int interval_ms = 100) {
-    // 定义转圈动画的字符序列
-    static const char spinner[] = "|/-\\";
+template <std::invocable Pred>
+inline void waitWithSpinner(std::string_view label, Pred &&predicate, int interval_ms = 50) {
+    // 转圈动画帧序列：
+    //   Windows  → ASCII（兼容老式 CMD/PowerShell）
+    //   其他平台 → Braille 点阵（与 npm/yarn/pnpm 风格一致）
+#if defined(_WIN32)
+    static constexpr std::string_view kSpinnerFrames[] = {"|", "/", "-", "\\"};
+#else
+    static constexpr std::string_view kSpinnerFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+#endif
+    static constexpr size_t kFrameCount = std::size(kSpinnerFrames);
     int count = 0;
 
     // 当 predicate() 返回 false 时持续等待
     while (!predicate()) {
         // 每隔若干次（可调）输出一个 spinner 字符，避免频繁刷新
         if (count % 10 == 0) {
-            int spinnerIndex = (count / 10) % (sizeof(spinner) - 1);
-            // 使用 fmt 库做到跨平台安全输出，且自动兼容老旧 Windows CMD
+            int spinnerIndex = (count / 10) % static_cast<int>(kFrameCount);
             fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r[W] {} {}", label,
-                       spinner[spinnerIndex]);
+                       kSpinnerFrames[spinnerIndex]);
             fflush(stderr);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));

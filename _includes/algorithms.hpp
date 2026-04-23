@@ -67,7 +67,9 @@ inline constexpr double getJaroWinklerSimilarity(std::string_view string1, std::
     transpositions /= 2;
 
     // 计算 Jaro 相似度
-    double jaro = ((double)matches / length1 + (double)matches / length2 + (double)(matches - transpositions) / matches) / 3.0;
+    double jaro = (static_cast<double>(matches) / length1
+                 + static_cast<double>(matches) / length2
+                 + static_cast<double>(matches - transpositions) / matches) / 3.0;
 
     // Winkler 前缀奖励 (最多奖励前 4 个字符)
     int prefix = 0;
