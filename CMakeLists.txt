@@ -35,21 +35,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(rapidyaml)
 
-# 拉取 mimalloc 并替换默认分配器
-FetchContent_Declare(
-    mimalloc
-    GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-    GIT_TAG        v3.3.1
-    GIT_SHALLOW    ON
-)
-# 关闭 mimalloc 自身的测试和没必要的构建目标
-set(MI_BUILD_TESTS OFF CACHE BOOL "Disable mimalloc tests" FORCE)
-set(MI_BUILD_OBJECT OFF CACHE BOOL "Disable mimalloc object build" FORCE)
-
-set(MI_OVERRIDE ON CACHE BOOL "Override standard allocations" FORCE)
-set(MI_BUILD_SHARED OFF CACHE BOOL "Build shared library" FORCE)
-FetchContent_MakeAvailable(mimalloc)
-
 # 目标定义与 Unity Build 加速编译
 add_executable(${PROJECT_NAME} main.cpp)
 set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD ON)
@@ -67,7 +52,7 @@ option(ENABLE_PGO_USE "Enable PGO usage" OFF)
 
 # 编译选项与优化
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic -march=native -O3 -fstrict-aliasing)
+    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic -march=native -Os -fstrict-aliasing)
     target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections -s)
     
     # 启用 mold 或 lld 链接器
@@ -104,7 +89,6 @@ endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE 
     spdlog::spdlog 
     ryml
-    mimalloc-static
 )
 
 if(WIN32)

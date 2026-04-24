@@ -1,5 +1,6 @@
-#include <initializer_list>  //std::initializer_list
-#include <iostream>          // std::cout
+#include <cstdio>            // std::puts
+#include <cstdlib>           // std::getenv
+#include <initializer_list>  // std::initializer_list
 #include <string>            // std::string
 
 #include "algorithms.hpp"  // 核心算法
@@ -47,14 +48,13 @@ bool isOrderAny(std::initializer_list<std::string_view> expectedOrders, std::str
 
 // 函数用途：显示帮助信息
 void utilHelper() {
-    std::cout << R"(Hexo 辅助工具
+    std::puts(R"(Hexo 辅助工具
 1. 部署静态文件：build、deploy
 2. 启动本地预览服务器：server
 3. 更新依赖包：packages
 4. 更新子模块（更新主题）：theme
 5. 显示帮助信息：help
-命令有一定鲁棒性，欢迎翻阅源代码查看具体实现
-)";
+命令有一定鲁棒性，欢迎翻阅源代码查看具体实现)");
 }
 
 // 函数用途：主函数
@@ -64,6 +64,10 @@ void utilHelper() {
 // 返回值：0 - 成功，1 - 失败
 int main(int argc, char *argv[]) {
     initLogger();
+
+    if (const char *env_p = std::getenv("HEXO_TOOLKIT_DEBUG"); env_p != nullptr) {
+        spdlog::set_level(spdlog::level::debug);
+    }
 
     std::string_view commandString = "";
 
@@ -96,23 +100,24 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    int exitCode = 0;
+
     if (isOrderAny({"build", "deploy"}, commandString)) {
-        hexoBuild();
+        exitCode = hexoBuild();
     } else if (isOrder("server", commandString)) {
-        hexoServer();
+        exitCode = hexoServer();
     } else if (isOrder("theme", commandString)) {
-        int submoduleExitCode = runCommand("git submodule update --remote --merge");
-        if (submoduleExitCode != 0) spdlog::error("git submodule 更新失败，退出码: {}", submoduleExitCode);
+        exitCode = runCommand("git submodule update --remote --merge");
+        if (exitCode != 0) spdlog::error("git submodule 更新失败，退出码: {}", exitCode);
     } else if (isOrder("packages", commandString)) {
         spdlog::debug("检测到包管理器: {}", config.packageManager);
-        int packageManagerExitCode = runCommand(config.upgradeCommand);
-        if (packageManagerExitCode != 0)
-            spdlog::error("包管理器 {} 更新失败，退出码: {}", config.packageManager, packageManagerExitCode);
+        exitCode = runCommand(config.upgradeCommand);
+        if (exitCode != 0) spdlog::error("包管理器 {} 更新失败，退出码: {}", config.packageManager, exitCode);
     } else {
         spdlog::error("无效的参数：所有判断都失败了，无法判断命令意图");
-        spdlog::error("您确定 {} 是正确的命令吗？", std::string(commandString));
+        spdlog::error("您确定 {} 是正确的命令吗？", commandString);
         utilHelper();
         return 1;
     }
-    return 0;
+    return exitCode;
 }

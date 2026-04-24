@@ -16,7 +16,7 @@ inline void hexoClean() {
 }
 
 // 函数用途：启动 Hexo 本地预览服务器
-inline void hexoServer() {
+inline int hexoServer() {
     ScopedTimer totalTimer("本次操作执行总");
     hexoClean();
     for (int portNumber = 4000; portNumber <= 65535; portNumber++) {
@@ -41,7 +41,7 @@ inline void hexoServer() {
                 int exitCode = resultFuture.get();
                 spdlog::error("Hexo 服务器启动失败或意外退出，退出码: {}", exitCode);
                 // 注意：std::async 返回的 future 析构时会阻塞等待线程结束（标准保证）
-                break;
+                return exitCode;
             }
 
             // 服务器成功启动，输出信息
@@ -50,15 +50,16 @@ inline void hexoServer() {
             // 阻塞，等待用户自己关掉服务器进程
             int exitCode = resultFuture.get();
             spdlog::info("Hexo 服务器已正常关闭，退出码: {}", exitCode);
-            break;
+            return exitCode;
         } else {
             spdlog::error("{} 端口已被占用，尝试使用下一个端口...", portNumber);
         }
     }
+    return 1;
 }
 
 // 函数用途：部署 Hexo 静态文件
-inline void hexoBuild() {
+inline int hexoBuild() {
     ScopedTimer totalTimer("本次操作执行总");
     hexoClean();
     spdlog::info("生成静态文件...");
@@ -67,7 +68,7 @@ inline void hexoBuild() {
         int generateExitCode = runCommand(std::format("{}hexo generate{}", config.packageManagerCommand, DEVICE_NULL));
         if (generateExitCode != 0) {
             spdlog::error("hexo generate 失败，退出码: {}，中止后续部署操作", generateExitCode);
-            return;
+            return generateExitCode;
         }
     }
 
@@ -100,7 +101,9 @@ inline void hexoBuild() {
     int deployExitCode = runCommand(std::format("{}hexo d{}", config.packageManagerCommand, DEVICE_NULL));
     if (deployExitCode != 0) {
         spdlog::error("hexo deploy 失败，退出码: {}", deployExitCode);
+        return deployExitCode;
     } else {
         hexoClean();
     }
+    return 0;
 }
