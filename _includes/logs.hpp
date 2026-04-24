@@ -38,7 +38,7 @@ class ScopedTimer {
     ~ScopedTimer() {
         auto elapsed = std::chrono::high_resolution_clock::now() - startTime;
         double seconds = std::chrono::duration<double>(elapsed).count();
-        spdlog::debug("{}用时: {} 秒", label, formatDuration(seconds, 3));
+        spdlog::debug("{}用时: {:.3f} 秒", label, seconds);
     }
 };
 
