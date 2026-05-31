@@ -1,13 +1,18 @@
 #pragma once
 
-#include <cstdlib>      // std::system
+#include <chrono>       // std::chrono
 #include <filesystem>   // std::filesystem
 #include <fstream>      // std::ifstream
+#include <format>       // std::format
+#include <optional>     // std::optional
 #include <string>       // std::string
 #include <string_view>  // std::string_view
+#include <utility>      // std::swap
+#include <thread>       // std::this_thread
 
 #if defined(_WIN32)
 #include <winsock2.h>  // Windows Sockets API
+#include <windows.h>   // CreateProcessA
 #pragma comment(lib, "ws2_32.lib")
 
 // RAII 包装：确保 Winsock 在程序生命周期内只初始化一次
@@ -22,6 +27,7 @@ struct WinsockInit {
 
 #else
 #include <netinet/in.h>  // AF_INET, INADDR_LOOPBACK
+#include <signal.h>      // kill
 #include <sys/wait.h>    // WIFEXITED, WEXITSTATUS
 #include <unistd.h>      // close()
 #endif
@@ -41,7 +47,15 @@ inline constexpr std::string_view DEVICE_NULL = " > /dev/null";
 // 返回值：若字符串中存在指定的依赖项则返回 true，否则返回 false
 inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependencies) {
     if (fileContent.empty()) return false;
-    return fileContent.find(dependencies) != std::string_view::npos;
+
+    const std::string quotedDependency = std::format("\"{}\"", dependencies);
+    if (fileContent.find(quotedDependency) != std::string_view::npos) return true;
+
+    const std::string scopeDependency = std::format("/{}@", dependencies);
+    if (fileContent.find(scopeDependency) != std::string_view::npos) return true;
+
+    const std::string pnpmDependency = std::format("/{}:", dependencies);
+    return fileContent.find(pnpmDependency) != std::string_view::npos;
 }
 
 // 函数用途：判断给定端口是否已被占用（即能够成功连接）
@@ -77,17 +91,161 @@ inline bool isPortInUse(int port) {
     return isOpen;
 }
 
+struct ManagedProcess {
+#if defined(_WIN32)
+    HANDLE processHandle = nullptr;
+    HANDLE threadHandle = nullptr;
+#else
+    pid_t pid = -1;
+#endif
+    bool finished = false;
+    int exitCode = -1;
+
+    ManagedProcess() = default;
+    ManagedProcess(const ManagedProcess &) = delete;
+    ManagedProcess &operator=(const ManagedProcess &) = delete;
+
+    // 进程句柄禁止拷贝，只允许移动转交所有权。
+    ManagedProcess(ManagedProcess &&other) noexcept { swap(other); }
+    ManagedProcess &operator=(ManagedProcess &&other) noexcept {
+        if (this == &other) return *this;
+        cleanup();
+        swap(other);
+        return *this;
+    }
+
+    ~ManagedProcess() { cleanup(); }
+
+    void swap(ManagedProcess &other) noexcept {
+#if defined(_WIN32)
+        std::swap(processHandle, other.processHandle);
+        std::swap(threadHandle, other.threadHandle);
+#else
+        std::swap(pid, other.pid);
+#endif
+        std::swap(finished, other.finished);
+        std::swap(exitCode, other.exitCode);
+    }
+
+    void cleanup() noexcept {
+        if (finished) return;
+        terminate();
+    }
+
+    static std::optional<ManagedProcess> start(const std::string &command) {
+        ManagedProcess process;
+#if defined(_WIN32)
+        // Windows 直接创建子进程，避免经过 shell 的额外状态层。
+        STARTUPINFOA startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        std::string mutableCommand = command;
+        PROCESS_INFORMATION processInformation{};
+        if (!CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
+                            &startupInfo, &processInformation)) {
+            return std::nullopt;
+        }
+        process.processHandle = processInformation.hProcess;
+        process.threadHandle = processInformation.hThread;
+#else
+        // Unix 下仍使用 /bin/sh -c 执行命令，保持与原有命令字符串兼容。
+        pid_t childPid = fork();
+        if (childPid < 0) return std::nullopt;
+        if (childPid == 0) {
+            execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
+            _exit(127);
+        }
+        process.pid = childPid;
+#endif
+        return process;
+    }
+
+    std::optional<int> pollExitCode() {
+        if (finished) return exitCode;
+#if defined(_WIN32)
+        // 非阻塞检查一次进程状态，避免把等待逻辑锁死在系统调用里。
+        DWORD status = WaitForSingleObject(processHandle, 0);
+        if (status == WAIT_TIMEOUT) return std::nullopt;
+        if (status != WAIT_OBJECT_0) {
+            finished = true;
+            exitCode = -1;
+        } else {
+            DWORD code = 0;
+            GetExitCodeProcess(processHandle, &code);
+            finished = true;
+            exitCode = static_cast<int>(code);
+        }
+        CloseHandle(threadHandle);
+        CloseHandle(processHandle);
+        threadHandle = nullptr;
+        processHandle = nullptr;
+        return exitCode;
+#else
+        // WNOHANG 用于轮询子进程，而不是一直阻塞主线程。
+        int status = 0;
+        pid_t result = waitpid(pid, &status, WNOHANG);
+        if (result == 0) return std::nullopt;
+        if (result < 0) {
+            finished = true;
+            exitCode = -1;
+            pid = -1;
+            return exitCode;
+        }
+        finished = true;
+        exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        pid = -1;
+        return exitCode;
+#endif
+    }
+
+    bool terminate() {
+        if (finished) return true;
+#if defined(_WIN32)
+        // Windows 直接结束子进程，并回收句柄。
+        if (processHandle == nullptr) return true;
+        TerminateProcess(processHandle, 1);
+        WaitForSingleObject(processHandle, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(processHandle, &code);
+        exitCode = static_cast<int>(code);
+        finished = true;
+        CloseHandle(threadHandle);
+        CloseHandle(processHandle);
+        threadHandle = nullptr;
+        processHandle = nullptr;
+        return true;
+#else
+        // 先温和退出，超时后再强制杀掉，减少残留僵尸进程的概率。
+        if (pid <= 0) return true;
+        kill(pid, SIGTERM);
+        for (int i = 0; i < 50; ++i) {
+            if (auto code = pollExitCode(); code.has_value()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        kill(pid, SIGKILL);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        finished = true;
+        exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        pid = -1;
+        return true;
+#endif
+    }
+};
+
 // 函数用途：跨平台执行系统命令并返回真实的退出码
 // 参数：
 //   command: 要执行的命令行指令
 // 返回值：命令执行完毕后的实际退出状态码
 inline int runCommand(const std::string &command) {
-    int status = std::system(command.c_str());
-#if defined(_WIN32)
-    return status;
-#else
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-#endif
+    auto process = ManagedProcess::start(command);
+    if (!process) return -1;
+
+    while (true) {
+        if (auto exitCode = process->pollExitCode()) {
+            return *exitCode;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
 }
 
 // 函数用途：一次性读取整个文件内容

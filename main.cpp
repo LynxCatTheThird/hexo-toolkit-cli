@@ -102,7 +102,10 @@ int main(int argc, char *argv[]) {
 
     int exitCode = 0;
 
-    if (isOrderAny({"build", "deploy"}, commandString)) {
+    if (isOrderAny({"help", "--help", "-help", "-h"}, commandString)) {
+        utilHelper();
+        return 0;
+    } else if (isOrderAny({"build", "deploy"}, commandString)) {
         exitCode = hexoBuild();
     } else if (isOrder("server", commandString)) {
         exitCode = hexoServer();

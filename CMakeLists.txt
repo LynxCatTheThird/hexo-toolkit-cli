@@ -49,11 +49,19 @@ target_include_directories(${PROJECT_NAME} PRIVATE _includes)
 # 用法: cmake -B build -DENABLE_PGO_GEN=ON (生成插桩文件) -> 运行程序 -> cmake -B build -DENABLE_PGO_USE=ON (使用配置优化)
 option(ENABLE_PGO_GEN "Enable PGO generation" OFF)
 option(ENABLE_PGO_USE "Enable PGO usage" OFF)
+option(ENABLE_NATIVE_ARCH "Build with -march=native for the current CPU" OFF)
+option(ENABLE_STRIP_SYMBOLS "Strip symbols from the output binary" OFF)
 
 # 编译选项与优化
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic -march=native -Os -fstrict-aliasing)
-    target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections -s)
+    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic -Os -fstrict-aliasing)
+    target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections)
+    if(ENABLE_NATIVE_ARCH)
+        target_compile_options(${PROJECT_NAME} PRIVATE -march=native)
+    endif()
+    if(ENABLE_STRIP_SYMBOLS)
+        target_link_options(${PROJECT_NAME} PRIVATE -s)
+    endif()
     
     # 启用 mold 或 lld 链接器
     find_program(MOLD_LINKER mold)

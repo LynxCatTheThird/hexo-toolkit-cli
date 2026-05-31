@@ -14,7 +14,7 @@
 | **依赖更新**     | 自动识别 npm / yarn / pnpm，执行对应的升级命令               |
 | **主题更新**     | 通过 `git submodule update --remote --merge` 拉取最新主题    |
 | **模糊命令匹配** | 基于 Jaro-Winkler 算法，输入 `bui`、`dep` 等缩写均可识别意图 |
-| **插件扩展**     | 按需执行 `hexo-swpp`、`algolia`、`gulp` 等附属工具           |
+| **插件扩展**     | 按需执行 `hexo-swpp`、`hexo-algolia`、`gulp` 等附属工具      |
 
 ## 命令参考
 
@@ -108,10 +108,11 @@ cmake --build build -j
 
 ```yaml
 similarityThreshold: 0.85
+serverStartupTimeoutSeconds: 30
 dependenciesSearchingFile: "package.json"
 additionalTools:
-  - ["swpp", "hexo swpp"]
-  - ["algolia", "hexo algolia"]
+  - ["hexo-swpp", "hexo swpp"]
+  - ["hexo-algolia", "hexo algolia"]
   - ["gulp", "gulp zip"]
 ```
 
@@ -125,16 +126,20 @@ additionalTools:
 
 用于检测附属插件是否已安装的文件（程序通过搜索该文件内容来判断插件是否存在）。默认情况下，程序会根据当前目录下的 lock 文件自动识别包管理器（npm / yarn / pnpm）并设置对应路径。手动指定此项后，自动检测将被禁用。
 
+**`serverStartupTimeoutSeconds`** _(Int, 默认 `30`)_
+
+`server` 启动阶段的最长等待时间。若超过该时间仍未监听到端口，程序会返回错误，避免一直卡在启动等待阶段。
+
 **`additionalTools`** _(List[List], 默认内置三个插件)_
 
-在 `build` / `deploy` 流程中，`hexo generate` 完成后额外执行的命令。格式为 `["关键字", "实际命令"]`，程序会先检查 `dependenciesSearchingFile` 中是否包含该关键字，存在才执行。设置为空列表可禁用所有插件：
+在 `build` / `deploy` 流程中，`hexo generate` 完成后额外执行的命令。格式为 `["npm 包名", "实际命令"]`，程序会先检查 `dependenciesSearchingFile` 中是否包含该包名，存在才执行。设置为空列表可禁用所有插件：
 
 ```yaml
 additionalTools: []
 ```
 
 > [!WARNING]
-> `additionalTools` 中的命令将以当前用户权限通过 `std::system()` 直接执行，请勿填入不受信任的内容。
+> `additionalTools` 中的命令将以当前用户权限通过子进程直接执行，请勿填入不受信任的内容。
 
 ## License
 

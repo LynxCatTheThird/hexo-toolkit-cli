@@ -59,9 +59,10 @@ inline constexpr PackageManagerInfo PM_TABLE[] = {
 
 struct Config {
     double similarityThreshold = 0.85;
+    int serverStartupTimeoutSeconds = 30;
     std::string dependenciesSearchingFile = "package.json";
     std::vector<std::pair<std::string, std::string>> additionalTools = {
-        {"swpp", "hexo swpp"}, {"gulp", "gulp zip"}, {"algolia", "hexo algolia"}};
+        {"hexo-swpp", "hexo swpp"}, {"gulp", "gulp zip"}, {"hexo-algolia", "hexo algolia"}};
 
     bool shouldAutoDetectDependencies = true;  // 自动检测功能开关
 
@@ -93,7 +94,7 @@ struct Config {
         }
         spdlog::debug("未检测到特定包管理器，默认使用: {}", packageManager);
         if (shouldAutoDetectDependencies) {
-            dependenciesSearchingFile = "package-lock.json";
+            dependenciesSearchingFile = "package.json";
         }
         spdlog::debug("依赖搜索文件设置为: {}", dependenciesSearchingFile);
     }
@@ -144,6 +145,22 @@ struct Config {
                 dependenciesSearchingFile = std::move(file);
                 shouldAutoDetectDependencies = false;  // 一旦 yaml 中明确规定了路径，关闭自动检测
                 spdlog::info("正在使用自定义依赖文件: {}", dependenciesSearchingFile);
+            }
+
+            // 允许用户在配置中收紧或放宽 server 启动阶段的等待上限。
+            if (root.has_child("serverStartupTimeoutSeconds") && root["serverStartupTimeoutSeconds"].has_val()) {
+                try {
+                    std::string timeoutText;
+                    root["serverStartupTimeoutSeconds"] >> timeoutText;
+                    int timeoutSeconds = std::stoi(timeoutText);
+                    if (timeoutSeconds > 0) {
+                        serverStartupTimeoutSeconds = timeoutSeconds;
+                    } else {
+                        spdlog::error("非法服务器启动超时，保留默认值 {} 秒", serverStartupTimeoutSeconds);
+                    }
+                } catch (const std::exception &e) {
+                    spdlog::warn("配置项 'serverStartupTimeoutSeconds' 转换为 int 异常: {}", e.what());
+                }
             }
 
             // 只要 YAML 中声明了 additionalTools 键（哪怕是空列表），即接管默认配置
