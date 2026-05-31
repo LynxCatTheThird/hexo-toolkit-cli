@@ -40,6 +40,12 @@ class ScopedTimer {
         double seconds = std::chrono::duration<double>(elapsed).count();
         spdlog::debug("{}用时: {:.3f} 秒", label, seconds);
     }
+
+    // RAII 对象不允许拷贝或移动，防止意外复制导致重复计时打印
+    ScopedTimer(const ScopedTimer &) = delete;
+    ScopedTimer &operator=(const ScopedTimer &) = delete;
+    ScopedTimer(ScopedTimer &&) = delete;
+    ScopedTimer &operator=(ScopedTimer &&) = delete;
 };
 
 // 函数用途：输出等待转圈动画，直到条件满足为止
@@ -65,7 +71,7 @@ inline void waitWithSpinner(std::string_view label, Predicate &&predicate, int i
     while (!predicate()) {
         // 每隔若干次（可调）输出一个 spinner 字符，避免频繁刷新
         if (count % 10 == 0) {
-            int spinnerIndex = (count / 10) % static_cast<int>(frameCount);
+            size_t spinnerIndex = (count / 10) % frameCount;
             fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r[W] {} {}", label,
                        spinnerFrames[spinnerIndex]);
             fflush(stderr);

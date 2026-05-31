@@ -69,15 +69,15 @@ int main(int argc, char *argv[]) {
         spdlog::set_level(spdlog::level::debug);
     }
 
-    std::string_view commandString = "";
+    std::string_view commandString;
 
     if (argc >= 2) {
         std::string_view arg1(argv[1]);
         std::string_view arg2 = argc >= 3 ? std::string_view(argv[2]) : "";
 
-        // 判断是否为开启 debug 的标识符（支持模糊匹配）
+        // debug 标志应精确匹配，避免模糊匹配误触（如 --decog 触发 debug 模式）
         auto isDebugFlag = [](std::string_view s) {
-            return isOrderAny({"--debug", "-debug", "--verbose", "-verbose", "-v"}, s);
+            return s == "--debug" || s == "-debug" || s == "--verbose" || s == "-verbose" || s == "-v";
         };
 
         if (isDebugFlag(arg1)) {

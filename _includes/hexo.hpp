@@ -1,7 +1,7 @@
 #pragma once
 
-#include <chrono>   // std::chrono::high_resolution_clock
-#include <string>   // std::string
+#include <chrono>  // std::chrono::high_resolution_clock
+#include <string>  // std::string
 
 #include "configs.hpp"  // 配置文件解析
 #include "logs.hpp"     // 日志
@@ -18,7 +18,7 @@ inline void hexoClean() {
 inline int hexoServer() {
     ScopedTimer totalTimer("本次操作执行总");
     hexoClean();
-    for (int portNumber = 4000; portNumber <= 65535; portNumber++) {
+    for (int portNumber = 4000; portNumber <= 4100; portNumber++) {
         std::string command =
             std::format("{}hexo server --port {}{}", config.packageManagerCommand, portNumber, DEVICE_NULL);
         if (!isPortInUse(portNumber)) {
@@ -64,9 +64,7 @@ inline int hexoServer() {
             spdlog::info("您现在可以访问 http://localhost:{} 预览效果了", portNumber);
 
             // 服务器运行期间持续轮询进程状态，退出后再返回退出码。
-            waitWithSpinner("Hexo 服务器运行中，等待退出...", [&]() {
-                return process->pollExitCode().has_value();
-            });
+            waitWithSpinner("Hexo 服务器运行中，等待退出...", [&]() { return process->pollExitCode().has_value(); });
             int exitCode = process->pollExitCode().value_or(-1);
             spdlog::info("Hexo 服务器已正常关闭，退出码: {}", exitCode);
             return exitCode;

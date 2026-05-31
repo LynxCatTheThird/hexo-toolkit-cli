@@ -30,7 +30,7 @@ FetchContent_MakeAvailable(spdlog)
 FetchContent_Declare(
   rapidyaml
   GIT_REPOSITORY https://github.com/biojppm/rapidyaml
-  GIT_TAG        v0.11.1
+  GIT_TAG        v0.13.0
   GIT_SHALLOW    ON
 )
 FetchContent_MakeAvailable(rapidyaml)

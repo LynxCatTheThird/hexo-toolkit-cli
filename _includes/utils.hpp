@@ -2,17 +2,17 @@
 
 #include <chrono>       // std::chrono
 #include <filesystem>   // std::filesystem
-#include <fstream>      // std::ifstream
 #include <format>       // std::format
+#include <fstream>      // std::ifstream
 #include <optional>     // std::optional
 #include <string>       // std::string
 #include <string_view>  // std::string_view
-#include <utility>      // std::swap
 #include <thread>       // std::this_thread
+#include <utility>      // std::swap
 
 #if defined(_WIN32)
-#include <winsock2.h>  // Windows Sockets API
 #include <windows.h>   // CreateProcessA
+#include <winsock2.h>  // Windows Sockets API
 #pragma comment(lib, "ws2_32.lib")
 
 // RAII 包装：确保 Winsock 在程序生命周期内只初始化一次
@@ -26,6 +26,8 @@ struct WinsockInit {
 }  // namespace detail
 
 #else
+#include <cerrno>       // errno, EINTR
+#include <fcntl.h>       // open, O_RDONLY
 #include <netinet/in.h>  // AF_INET, INADDR_LOOPBACK
 #include <signal.h>      // kill
 #include <sys/wait.h>    // WIFEXITED, WEXITSTATUS
@@ -97,10 +99,16 @@ struct ManagedProcess {
     HANDLE threadHandle = nullptr;
 #else
     pid_t pid = -1;
+    // 与 std::system() 行为一致：子进程运行期间父进程忽略 SIGINT/SIGQUIT，
+    // 让 Ctrl+C 仅由子进程处理，父进程在子进程退出后正常清理终端状态。
+    struct sigaction oldSigInt {};
+    struct sigaction oldSigQuit {};
+    bool signalsSaved = false;
 #endif
     bool finished = false;
     int exitCode = -1;
 
+    // pid 初始为 -1，terminate() 会提前检查 pid <= 0 而跳过，移动后的空对象不会误杀进程
     ManagedProcess() = default;
     ManagedProcess(const ManagedProcess &) = delete;
     ManagedProcess &operator=(const ManagedProcess &) = delete;
@@ -122,9 +130,22 @@ struct ManagedProcess {
         std::swap(threadHandle, other.threadHandle);
 #else
         std::swap(pid, other.pid);
+        std::swap(oldSigInt, other.oldSigInt);
+        std::swap(oldSigQuit, other.oldSigQuit);
+        std::swap(signalsSaved, other.signalsSaved);
 #endif
         std::swap(finished, other.finished);
         std::swap(exitCode, other.exitCode);
+    }
+
+    void restoreSignals() noexcept {
+#if !defined(_WIN32)
+        if (signalsSaved) {
+            sigaction(SIGINT, &oldSigInt, nullptr);
+            sigaction(SIGQUIT, &oldSigQuit, nullptr);
+            signalsSaved = false;
+        }
+#endif
     }
 
     void cleanup() noexcept {
@@ -151,10 +172,28 @@ struct ManagedProcess {
         pid_t childPid = fork();
         if (childPid < 0) return std::nullopt;
         if (childPid == 0) {
+            // 将子进程 stdin 重定向到 /dev/null，避免 Node.js 工具链的 readline 交互冲突。
+            int devNull = open("/dev/null", O_RDONLY);
+            if (devNull >= 0) {
+                if (devNull != STDIN_FILENO) {
+                    dup2(devNull, STDIN_FILENO);
+                    close(devNull);
+                }
+            }
+            // 标记为 CI 环境，使 pnpm/npm 等跳过 ConfirmPrompt 而非因 EOF 报错退出。
+            setenv("CI", "true", 0);
             execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
             _exit(127);
         }
         process.pid = childPid;
+
+        // 父进程：保存并忽略 SIGINT/SIGQUIT，复刻 std::system() 的 POSIX 行为。
+        struct sigaction ignoreAction {};
+        ignoreAction.sa_handler = SIG_IGN;
+        sigemptyset(&ignoreAction.sa_mask);
+        sigaction(SIGINT, &ignoreAction, &process.oldSigInt);
+        sigaction(SIGQUIT, &ignoreAction, &process.oldSigQuit);
+        process.signalsSaved = true;
 #endif
         return process;
     }
@@ -185,14 +224,17 @@ struct ManagedProcess {
         pid_t result = waitpid(pid, &status, WNOHANG);
         if (result == 0) return std::nullopt;
         if (result < 0) {
+            if (errno == EINTR) return std::nullopt;
             finished = true;
             exitCode = -1;
             pid = -1;
+            restoreSignals();
             return exitCode;
         }
         finished = true;
         exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         pid = -1;
+        restoreSignals();
         return exitCode;
 #endif
     }
@@ -227,6 +269,7 @@ struct ManagedProcess {
         finished = true;
         exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         pid = -1;
+        restoreSignals();
         return true;
 #endif
     }
@@ -254,7 +297,10 @@ inline int runCommand(const std::string &command) {
 // 返回值：包含文件所有内容的 std::string，如果读取失败则返回空字符串
 inline std::string readFileContents(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::in | std::ios::binary);
-    if (!file) return {};
+    if (!file) {
+        spdlog::debug("无法打开文件: {}", path.string());
+        return {};
+    }
     file.seekg(0, std::ios::end);
     std::streamsize size = file.tellg();
     if (size <= 0) return {};

@@ -14,7 +14,7 @@
 | **依赖更新**     | 自动识别 npm / yarn / pnpm，执行对应的升级命令               |
 | **主题更新**     | 通过 `git submodule update --remote --merge` 拉取最新主题    |
 | **模糊命令匹配** | 基于 Jaro-Winkler 算法，输入 `bui`、`dep` 等缩写均可识别意图 |
-| **插件扩展**     | 按需执行 `hexo-swpp`、`hexo-algolia`、`gulp` 等附属工具      |
+| **插件扩展**     | 按需执行 `hexo-swpp`、`hexo-algolia` 等附属工具              |
 
 ## 命令参考
 
@@ -113,7 +113,6 @@ dependenciesSearchingFile: "package.json"
 additionalTools:
   - ["hexo-swpp", "hexo swpp"]
   - ["hexo-algolia", "hexo algolia"]
-  - ["gulp", "gulp zip"]
 ```
 
 ### 参数说明

@@ -21,7 +21,6 @@ build/
 *.lib
 *.so
 *.dll
-t
 
 # 测试样例
 *.out

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <charconv>    // std::from_chars
 #include <filesystem>   // std::filesystem
 #include <string>       // std::string
 #include <string_view>  // std::string_view
@@ -61,8 +62,8 @@ struct Config {
     double similarityThreshold = 0.85;
     int serverStartupTimeoutSeconds = 30;
     std::string dependenciesSearchingFile = "package.json";
-    std::vector<std::pair<std::string, std::string>> additionalTools = {
-        {"hexo-swpp", "hexo swpp"}, {"gulp", "gulp zip"}, {"hexo-algolia", "hexo algolia"}};
+    std::vector<std::pair<std::string, std::string>> additionalTools = {{"hexo-swpp", "hexo swpp"},
+                                                                        {"hexo-algolia", "hexo algolia"}};
 
     bool shouldAutoDetectDependencies = true;  // 自动检测功能开关
 
@@ -124,17 +125,14 @@ struct Config {
 
             // 读取相似度阈值，并进行合理性检查
             if (root.has_child("similarityThreshold") && root["similarityThreshold"].has_val()) {
-                try {
-                    std::string valStr;
-                    root["similarityThreshold"] >> valStr;
-                    double temporaryThreshold = std::stod(valStr);
-                    if (temporaryThreshold > 0.0 && temporaryThreshold <= 1.0) {
-                        similarityThreshold = temporaryThreshold;
-                    } else {
-                        spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
-                    }
-                } catch (const std::exception &e) {
-                    spdlog::warn("配置项 'similarityThreshold' 转换为 double 异常: {}", e.what());
+                std::string valStr;
+                root["similarityThreshold"] >> valStr;
+                double temporaryThreshold{};
+                auto [ptr, ec] = std::from_chars(valStr.data(), valStr.data() + valStr.size(), temporaryThreshold);
+                if (ec == std::errc{} && temporaryThreshold > 0.0 && temporaryThreshold <= 1.0) {
+                    similarityThreshold = temporaryThreshold;
+                } else {
+                    spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
                 }
             }
 
@@ -149,17 +147,14 @@ struct Config {
 
             // 允许用户在配置中收紧或放宽 server 启动阶段的等待上限。
             if (root.has_child("serverStartupTimeoutSeconds") && root["serverStartupTimeoutSeconds"].has_val()) {
-                try {
-                    std::string timeoutText;
-                    root["serverStartupTimeoutSeconds"] >> timeoutText;
-                    int timeoutSeconds = std::stoi(timeoutText);
-                    if (timeoutSeconds > 0) {
-                        serverStartupTimeoutSeconds = timeoutSeconds;
-                    } else {
-                        spdlog::error("非法服务器启动超时，保留默认值 {} 秒", serverStartupTimeoutSeconds);
-                    }
-                } catch (const std::exception &e) {
-                    spdlog::warn("配置项 'serverStartupTimeoutSeconds' 转换为 int 异常: {}", e.what());
+                std::string timeoutText;
+                root["serverStartupTimeoutSeconds"] >> timeoutText;
+                int timeoutSeconds{};
+                auto [ptr, ec] = std::from_chars(timeoutText.data(), timeoutText.data() + timeoutText.size(), timeoutSeconds);
+                if (ec == std::errc{} && timeoutSeconds > 0) {
+                    serverStartupTimeoutSeconds = timeoutSeconds;
+                } else {
+                    spdlog::error("非法服务器启动超时，保留默认值 {} 秒", serverStartupTimeoutSeconds);
                 }
             }
 
