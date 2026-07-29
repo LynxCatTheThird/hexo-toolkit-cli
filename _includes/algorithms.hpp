@@ -20,7 +20,7 @@ inline constexpr double getJaroWinklerSimilarity(std::string_view string1, std::
     constexpr size_t MAXIMUM_LENGTH = 32;
     if (string1.size() > MAXIMUM_LENGTH || string2.size() > MAXIMUM_LENGTH) {
         if (!std::is_constant_evaluated()) {
-            spdlog::warn("输入字符串超过最大长度限制 ({})，跳过相似度计算", MAXIMUM_LENGTH);
+            spdlog::trace("    输入超过 {} 字符，跳过相似度计算", MAXIMUM_LENGTH);
         }
         return 0.0;
     }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <charconv>    // std::from_chars
+#include <charconv>     // std::from_chars
 #include <filesystem>   // std::filesystem
 #include <string>       // std::string
 #include <string_view>  // std::string_view
@@ -53,10 +53,16 @@ struct PackageManagerInfo {
 };
 
 inline constexpr PackageManagerInfo PM_TABLE[] = {
-    {"package-lock.json", "npm", "npx ", "npx rimraf node_modules package-lock.json && ncu -u && npm install"},
+    {"package-lock.json", "npm", "npx ", "npx npm-check-updates -u && npm install"},
     {"yarn.lock", "yarn", "yarn run ", "yarn upgrade --latest"},
     {"pnpm-lock.yaml", "pnpm", "pnpm exec ", "pnpm update --latest"},
 };
+
+template <typename Number>
+inline bool parseNumberFully(std::string_view text, Number &value) {
+    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    return ec == std::errc{} && ptr == text.data() + text.size();
+}
 
 struct Config {
     double similarityThreshold = 0.85;
@@ -70,12 +76,12 @@ struct Config {
     // 包管理器信息
     std::string packageManager = "npm";
     std::string packageManagerCommand = "npx ";
-    std::string upgradeCommand = "npx rimraf node_modules package-lock.json && ncu -u && npm install";
+    std::string upgradeCommand = "npx npm-check-updates -u && npm install";
 
     void logPathInfo(const std::filesystem::path &configPath) {
-        spdlog::debug("配置文件路径: {}", configPath.string());
-        spdlog::debug("可执行文件目录: {}", getExecutableDir().string());
-        spdlog::debug("当前工作目录: {}", std::filesystem::current_path().string());
+        logTrace("配置文件：{}", configPath.string());
+        logTrace("可执行文件目录：{}", getExecutableDir().string());
+        logTrace("当前工作目录：{}", std::filesystem::current_path().string());
     }
 
     // 检测使用的包管理器，并自动设置依赖搜索文件
@@ -85,26 +91,26 @@ struct Config {
                 packageManager = packageManagerInfo.name;
                 packageManagerCommand = packageManagerInfo.commandPrefix;
                 upgradeCommand = packageManagerInfo.upgradeCommand;
-                spdlog::debug("检测到包管理器: {}", packageManager);
+                logTrace("检测到包管理器：{}", packageManager);
                 if (shouldAutoDetectDependencies) {
                     dependenciesSearchingFile = packageManagerInfo.lockFile;
                 }
-                spdlog::debug("依赖搜索文件设置为: {}", dependenciesSearchingFile);
+                logTrace("依赖搜索文件：{}", dependenciesSearchingFile);
                 return;
             }
         }
-        spdlog::debug("未检测到特定包管理器，默认使用: {}", packageManager);
+        logTrace("未检测到 lock 文件，使用 {}", packageManager);
         if (shouldAutoDetectDependencies) {
             dependenciesSearchingFile = "package.json";
         }
-        spdlog::debug("依赖搜索文件设置为: {}", dependenciesSearchingFile);
+        logTrace("依赖搜索文件：{}", dependenciesSearchingFile);
     }
 
     void loadFromYamlIfExists(const std::string &filename = "config.yaml") {
         std::filesystem::path configPath = getExecutableDir() / filename;
 
         if (!std::filesystem::exists(configPath)) {
-            spdlog::warn("配置文件 {} 未找到，使用默认配置", configPath.string());
+            logTrace("配置文件不存在，使用默认配置：{}", configPath.string());
             return;
         }
 
@@ -128,8 +134,8 @@ struct Config {
                 std::string valStr;
                 root["similarityThreshold"] >> valStr;
                 double temporaryThreshold{};
-                auto [ptr, ec] = std::from_chars(valStr.data(), valStr.data() + valStr.size(), temporaryThreshold);
-                if (ec == std::errc{} && temporaryThreshold > 0.0 && temporaryThreshold <= 1.0) {
+                if (parseNumberFully(valStr, temporaryThreshold) && temporaryThreshold > 0.0 &&
+                    temporaryThreshold <= 1.0) {
                     similarityThreshold = temporaryThreshold;
                 } else {
                     spdlog::error("非法相似度阈值，保留默认值 {}", similarityThreshold);
@@ -142,7 +148,7 @@ struct Config {
                 root["dependenciesSearchingFile"] >> file;
                 dependenciesSearchingFile = std::move(file);
                 shouldAutoDetectDependencies = false;  // 一旦 yaml 中明确规定了路径，关闭自动检测
-                spdlog::info("正在使用自定义依赖文件: {}", dependenciesSearchingFile);
+                logTrace("使用自定义依赖文件：{}", dependenciesSearchingFile);
             }
 
             // 允许用户在配置中收紧或放宽 server 启动阶段的等待上限。
@@ -150,8 +156,7 @@ struct Config {
                 std::string timeoutText;
                 root["serverStartupTimeoutSeconds"] >> timeoutText;
                 int timeoutSeconds{};
-                auto [ptr, ec] = std::from_chars(timeoutText.data(), timeoutText.data() + timeoutText.size(), timeoutSeconds);
-                if (ec == std::errc{} && timeoutSeconds > 0) {
+                if (parseNumberFully(timeoutText, timeoutSeconds) && timeoutSeconds > 0) {
                     serverStartupTimeoutSeconds = timeoutSeconds;
                 } else {
                     spdlog::error("非法服务器启动超时，保留默认值 {} 秒", serverStartupTimeoutSeconds);
@@ -172,14 +177,14 @@ struct Config {
                         }
                     }
                     if (!additionalTools.empty()) {
-                        spdlog::info("加载了 {} 个扩展工具", additionalTools.size());
+                        logTrace("加载了 {} 个附属工具", additionalTools.size());
                     } else {
-                        spdlog::info("检测到空的 additionalTools 配置，已清空内置扩展工具");
+                        logTrace("additionalTools 为空，已清空内置附属工具");
                     }
                 }
             }
 
-            spdlog::debug("成功加载配置 {}", configPath.string());
+            logTrace("已加载配置：{}", configPath.string());
 
         } catch (const std::exception &exception) {
             spdlog::error("YAML 配置文件 {} 解析失败: {}", configPath.string(), exception.what());

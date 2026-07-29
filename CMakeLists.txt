@@ -38,6 +38,7 @@ FetchContent_MakeAvailable(rapidyaml)
 # 目标定义与 Unity Build 加速编译
 add_executable(${PROJECT_NAME} main.cpp)
 set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD ON)
+target_compile_definitions(${PROJECT_NAME} PRIVATE HEXO_TOOL_VERSION="${PROJECT_VERSION}")
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE 
     <spdlog/spdlog.h>
@@ -101,6 +102,52 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(HexoToolTests tests/core_tests.cpp)
+    target_include_directories(HexoToolTests PRIVATE _includes)
+    target_link_libraries(HexoToolTests PRIVATE spdlog::spdlog ryml)
+    if(WIN32)
+        target_link_libraries(HexoToolTests PRIVATE ws2_32)
+    endif()
+
+    add_test(NAME core COMMAND HexoToolTests)
+    add_test(NAME cli_help COMMAND $<TARGET_FILE:${PROJECT_NAME}> help)
+    set_tests_properties(cli_help PROPERTIES PASS_REGULAR_EXPRESSION "deploy    生成并部署（一条龙）")
+    add_test(NAME cli_version COMMAND $<TARGET_FILE:${PROJECT_NAME}> --version)
+    add_test(NAME cli_no_arguments COMMAND $<TARGET_FILE:${PROJECT_NAME}>)
+    add_test(NAME cli_rejects_extra_arguments COMMAND $<TARGET_FILE:${PROJECT_NAME}> help unexpected)
+    set_tests_properties(cli_rejects_extra_arguments PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME cli_rejects_non_hexo_project COMMAND $<TARGET_FILE:${PROJECT_NAME}> build --dry-run)
+    set_tests_properties(cli_rejects_non_hexo_project PROPERTIES WILL_FAIL TRUE)
+
+    set(HEXO_TEST_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/hexo-project")
+    add_test(NAME cli_build_dry_run
+             COMMAND $<TARGET_FILE:${PROJECT_NAME}> build --dry-run --project "${HEXO_TEST_PROJECT}" -- --config
+                     "site config.yml")
+    set_tests_properties(cli_build_dry_run PROPERTIES
+                         PASS_REGULAR_EXPRESSION "hexo generate"
+                         FAIL_REGULAR_EXPRESSION "hexo deploy|配置文件|未安装")
+
+    add_test(NAME cli_deploy_dry_run
+             COMMAND $<TARGET_FILE:${PROJECT_NAME}> deploy --dry-run --project "${HEXO_TEST_PROJECT}")
+    set_tests_properties(cli_deploy_dry_run PROPERTIES
+                         PASS_REGULAR_EXPRESSION "预演完成，未执行命令"
+                         FAIL_REGULAR_EXPRESSION "配置文件|未安装")
+
+    add_test(NAME cli_verbose_dry_run
+             COMMAND $<TARGET_FILE:${PROJECT_NAME}> deploy -v --dry-run --project "${HEXO_TEST_PROJECT}")
+    set_tests_properties(cli_verbose_dry_run PROPERTIES
+                         PASS_REGULAR_EXPRESSION "配置 默认配置 · npm · 2 个附属工具"
+                         FAIL_REGULAR_EXPRESSION "前缀匹配|模糊匹配|未匹配|2>&1")
+
+    add_test(NAME cli_trace_dry_run
+             COMMAND $<TARGET_FILE:${PROJECT_NAME}> deploy -vv --dry-run --project "${HEXO_TEST_PROJECT}")
+    set_tests_properties(cli_trace_dry_run PROPERTIES
+                         PASS_REGULAR_EXPRESSION "前缀匹配：deploy"
+                         FAIL_REGULAR_EXPRESSION "2>&1")
 endif()
 
 # UPX 产物压缩

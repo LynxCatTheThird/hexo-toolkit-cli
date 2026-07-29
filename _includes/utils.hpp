@@ -1,14 +1,19 @@
 #pragma once
 
-#include <chrono>       // std::chrono
-#include <filesystem>   // std::filesystem
-#include <format>       // std::format
-#include <fstream>      // std::ifstream
-#include <optional>     // std::optional
-#include <string>       // std::string
-#include <string_view>  // std::string_view
-#include <thread>       // std::this_thread
-#include <utility>      // std::swap
+#include <cctype>            // std::tolower
+#include <chrono>            // std::chrono
+#include <filesystem>        // std::filesystem
+#include <format>            // std::format
+#include <fstream>           // std::ifstream
+#include <initializer_list>  // std::initializer_list
+#include <optional>          // std::optional
+#include <string>            // std::string
+#include <string_view>       // std::string_view
+#include <thread>            // std::this_thread
+#include <utility>           // std::swap
+#include <vector>            // std::vector
+
+#include "logs.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>   // CreateProcessA
@@ -26,21 +31,98 @@ struct WinsockInit {
 }  // namespace detail
 
 #else
-#include <cerrno>       // errno, EINTR
 #include <fcntl.h>       // open, O_RDONLY
 #include <netinet/in.h>  // AF_INET, INADDR_LOOPBACK
 #include <signal.h>      // kill
 #include <sys/wait.h>    // WIFEXITED, WEXITSTATUS
 #include <unistd.h>      // close()
+
+#include <cerrno>  // errno, EINTR
 #endif
 
-// 根据操作系统的不同指向不同的空设备路径
-// 仅重定向 stdout，stderr 保留输出以便调试
+inline bool dryRunEnabled = false;
+inline bool traceOutputEnabled = false;
+inline std::filesystem::path commandLogFile;
+
+inline std::string_view commandOutputRedirect() {
 #if defined(_WIN32)
-inline constexpr std::string_view DEVICE_NULL = " > NUL";
+    return traceOutputEnabled ? " > NUL" : " > NUL 2> NUL";
 #else
-inline constexpr std::string_view DEVICE_NULL = " > /dev/null";
+    return traceOutputEnabled ? " > /dev/null" : " > /dev/null 2>&1";
 #endif
+}
+
+inline std::string failureTraceHint() { return traceOutputEnabled ? std::string{} : "。使用 -vv 查看原始输出"; }
+
+inline std::string commandForLog(std::string_view command) {
+    const std::string_view redirect = commandOutputRedirect();
+    if (!traceOutputEnabled && command.ends_with(redirect)) {
+        command.remove_suffix(redirect.size());
+    }
+    return std::string(command);
+}
+
+inline std::string quoteShellArgument(std::string_view argument) {
+#if defined(_WIN32)
+    std::string quoted = "\"";
+    size_t backslashCount = 0;
+    for (char character : argument) {
+        if (character == '\\') {
+            ++backslashCount;
+            continue;
+        }
+        if (character == '"') {
+            quoted.append(backslashCount * 2 + 1, '\\');
+            quoted.push_back('"');
+            backslashCount = 0;
+            continue;
+        }
+        quoted.append(backslashCount, '\\');
+        backslashCount = 0;
+        quoted.push_back(character);
+    }
+    quoted.append(backslashCount * 2, '\\');
+    quoted.push_back('"');
+    return quoted;
+#else
+    std::string quoted = "'";
+    for (char character : argument) {
+        if (character == '\'')
+            quoted += "'\\''";
+        else
+            quoted.push_back(character);
+    }
+    quoted.push_back('\'');
+    return quoted;
+#endif
+}
+
+inline std::string joinShellArguments(const std::vector<std::string> &arguments) {
+    std::string result;
+    for (const auto &argument : arguments) {
+        result.push_back(' ');
+        result += quoteShellArgument(argument);
+    }
+    return result;
+}
+
+inline std::string analyzeCommandOutput(std::string_view output) {
+    auto containsAny = [output](std::initializer_list<std::string_view> terms) {
+        for (auto term : terms) {
+            if (output.find(term) != std::string_view::npos) return true;
+        }
+        return false;
+    };
+    if (containsAny({"EACCES", "permission denied", "权限不足"})) return "权限不足，检查目录权限或以正确用户运行";
+    if (containsAny({"ENOENT", "not found", "找不到", "不存在"}))
+        return "找不到命令或文件，检查依赖是否安装及 PATH 配置";
+    if (containsAny({"ECONNREFUSED", "ETIMEDOUT", "network", "网络", "registry"})) return "网络或 registry 连接失败";
+    if (containsAny({"Cannot find module", "MODULE_NOT_FOUND", "模块"})) return "Node.js 模块缺失，尝试重新安装依赖";
+    if (containsAny({"YAMLException", "Invalid config", "配置文件"})) return "配置文件格式或内容可能有误";
+    if (containsAny({"authentication", "401", "403", "unauthorized", "认证"}))
+        return "认证失败，检查 token、账号或仓库权限";
+    return {};
+}
 
 // 函数用途：检查缓存的文件内容中是否存在特定依赖项
 // 参数：
@@ -97,12 +179,14 @@ struct ManagedProcess {
 #if defined(_WIN32)
     HANDLE processHandle = nullptr;
     HANDLE threadHandle = nullptr;
+    HANDLE jobHandle = nullptr;
 #else
     pid_t pid = -1;
+    pid_t processGroupId = -1;
     // 与 std::system() 行为一致：子进程运行期间父进程忽略 SIGINT/SIGQUIT，
     // 让 Ctrl+C 仅由子进程处理，父进程在子进程退出后正常清理终端状态。
-    struct sigaction oldSigInt {};
-    struct sigaction oldSigQuit {};
+    struct sigaction oldSigInt{};
+    struct sigaction oldSigQuit{};
     bool signalsSaved = false;
 #endif
     bool finished = false;
@@ -128,8 +212,10 @@ struct ManagedProcess {
 #if defined(_WIN32)
         std::swap(processHandle, other.processHandle);
         std::swap(threadHandle, other.threadHandle);
+        std::swap(jobHandle, other.jobHandle);
 #else
         std::swap(pid, other.pid);
+        std::swap(processGroupId, other.processGroupId);
         std::swap(oldSigInt, other.oldSigInt);
         std::swap(oldSigQuit, other.oldSigQuit);
         std::swap(signalsSaved, other.signalsSaved);
@@ -149,29 +235,50 @@ struct ManagedProcess {
     }
 
     void cleanup() noexcept {
+#if defined(_WIN32)
         if (finished) return;
+#else
+        if (finished && processGroupId <= 0) return;
+#endif
         terminate();
     }
 
     static std::optional<ManagedProcess> start(const std::string &command) {
         ManagedProcess process;
 #if defined(_WIN32)
-        // Windows 直接创建子进程，避免经过 shell 的额外状态层。
+        // 现有命令包含重定向和 &&，需要由 cmd.exe 解释。Job Object 确保子孙进程一并回收。
         STARTUPINFOA startupInfo{};
         startupInfo.cb = sizeof(startupInfo);
-        std::string mutableCommand = command;
+        std::string mutableCommand = std::format("cmd.exe /D /S /C \"{}\"", command);
         PROCESS_INFORMATION processInformation{};
-        if (!CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
-                            &startupInfo, &processInformation)) {
+        if (!CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation)) {
+            return std::nullopt;
+        }
+
+        HANDLE job = CreateJobObjectA(nullptr, nullptr);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInformation{};
+        jobInformation.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (job == nullptr ||
+            !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jobInformation, sizeof(jobInformation)) ||
+            !AssignProcessToJobObject(job, processInformation.hProcess) ||
+            ResumeThread(processInformation.hThread) == static_cast<DWORD>(-1)) {
+            TerminateProcess(processInformation.hProcess, 1);
+            CloseHandle(processInformation.hThread);
+            CloseHandle(processInformation.hProcess);
+            if (job != nullptr) CloseHandle(job);
             return std::nullopt;
         }
         process.processHandle = processInformation.hProcess;
         process.threadHandle = processInformation.hThread;
+        process.jobHandle = job;
 #else
         // Unix 下仍使用 /bin/sh -c 执行命令，保持与原有命令字符串兼容。
         pid_t childPid = fork();
         if (childPid < 0) return std::nullopt;
         if (childPid == 0) {
+            // 独立进程组允许父进程在超时或退出时终止整棵命令进程树。
+            setpgid(0, 0);
             // 将子进程 stdin 重定向到 /dev/null，避免 Node.js 工具链的 readline 交互冲突。
             int devNull = open("/dev/null", O_RDONLY);
             if (devNull >= 0) {
@@ -186,9 +293,12 @@ struct ManagedProcess {
             _exit(127);
         }
         process.pid = childPid;
+        process.processGroupId = childPid;
+        // 与子进程中的 setpgid 配合消除调度竞态；子进程已 exec 时的失败可忽略。
+        setpgid(childPid, childPid);
 
         // 父进程：保存并忽略 SIGINT/SIGQUIT，复刻 std::system() 的 POSIX 行为。
-        struct sigaction ignoreAction {};
+        struct sigaction ignoreAction{};
         ignoreAction.sa_handler = SIG_IGN;
         sigemptyset(&ignoreAction.sa_mask);
         sigaction(SIGINT, &ignoreAction, &process.oldSigInt);
@@ -215,8 +325,10 @@ struct ManagedProcess {
         }
         CloseHandle(threadHandle);
         CloseHandle(processHandle);
+        CloseHandle(jobHandle);
         threadHandle = nullptr;
         processHandle = nullptr;
+        jobHandle = nullptr;
         return exitCode;
 #else
         // WNOHANG 用于轮询子进程，而不是一直阻塞主线程。
@@ -234,17 +346,21 @@ struct ManagedProcess {
         finished = true;
         exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         pid = -1;
+        if (kill(-processGroupId, 0) < 0 && errno == ESRCH) processGroupId = -1;
         restoreSignals();
         return exitCode;
 #endif
     }
 
     bool terminate() {
-        if (finished) return true;
 #if defined(_WIN32)
-        // Windows 直接结束子进程，并回收句柄。
+        if (finished) return true;
+        // Job Object 会结束 cmd.exe 以及它启动的 Node/Hexo 子孙进程。
         if (processHandle == nullptr) return true;
-        TerminateProcess(processHandle, 1);
+        if (jobHandle != nullptr)
+            TerminateJobObject(jobHandle, 1);
+        else
+            TerminateProcess(processHandle, 1);
         WaitForSingleObject(processHandle, INFINITE);
         DWORD code = 1;
         GetExitCodeProcess(processHandle, &code);
@@ -252,23 +368,36 @@ struct ManagedProcess {
         finished = true;
         CloseHandle(threadHandle);
         CloseHandle(processHandle);
+        if (jobHandle != nullptr) CloseHandle(jobHandle);
         threadHandle = nullptr;
         processHandle = nullptr;
+        jobHandle = nullptr;
         return true;
 #else
         // 先温和退出，超时后再强制杀掉，减少残留僵尸进程的概率。
-        if (pid <= 0) return true;
-        kill(pid, SIGTERM);
+        if (processGroupId <= 0) return true;
+        const pid_t groupId = processGroupId;
+        kill(-groupId, SIGTERM);
         for (int i = 0; i < 50; ++i) {
-            if (auto code = pollExitCode(); code.has_value()) return true;
+            if (!finished) pollExitCode();
+            if (kill(-groupId, 0) < 0 && errno == ESRCH) {
+                processGroupId = -1;
+                return true;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        kill(pid, SIGKILL);
-        int status = 0;
-        waitpid(pid, &status, 0);
+        kill(-groupId, SIGKILL);
+        if (pid > 0) {
+            int status = 0;
+            pid_t waitResult;
+            do {
+                waitResult = waitpid(pid, &status, 0);
+            } while (waitResult < 0 && errno == EINTR);
+            if (waitResult > 0) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            pid = -1;
+        }
         finished = true;
-        exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        pid = -1;
+        processGroupId = -1;
         restoreSignals();
         return true;
 #endif
@@ -279,16 +408,52 @@ struct ManagedProcess {
 // 参数：
 //   command: 要执行的命令行指令
 // 返回值：命令执行完毕后的实际退出状态码
+inline std::string readFileContents(const std::filesystem::path &path);
+
 inline int runCommand(const std::string &command) {
-    auto process = ManagedProcess::start(command);
+    if (dryRunEnabled) {
+        spdlog::info("  $ {}", commandForLog(command));
+        return 0;
+    }
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto capturePath = std::filesystem::temp_directory_path() / std::format("hexo-toolkit-command-{}.log", stamp);
+    std::string executableCommand = command;
+    const std::string_view redirect = commandOutputRedirect();
+    if (executableCommand.ends_with(redirect)) executableCommand.resize(executableCommand.size() - redirect.size());
+    executableCommand = "( " + executableCommand + " ) > " + quoteShellArgument(capturePath.string()) + " 2>&1";
+    logDetail("$ {}", commandForLog(command));
+    auto process = ManagedProcess::start(executableCommand);
     if (!process) return -1;
 
+    int result = -1;
     while (true) {
         if (auto exitCode = process->pollExitCode()) {
-            return *exitCode;
+            result = *exitCode;
+            break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    std::string output = readFileContents(capturePath);
+    if (!commandLogFile.empty()) {
+        std::ifstream source(capturePath, std::ios::in | std::ios::binary);
+        std::ofstream destination(commandLogFile, std::ios::out | std::ios::app | std::ios::binary);
+        if (source && destination) {
+            destination << "\n===== " << commandForLog(command) << " =====\n";
+            destination << source.rdbuf();
+        } else {
+            spdlog::error("无法写入日志文件：{}", commandLogFile.string());
+        }
+    }
+    std::error_code removeError;
+    std::filesystem::remove(capturePath, removeError);
+    if (result != 0 && !output.empty()) {
+        if (auto diagnosis = analyzeCommandOutput(output); !diagnosis.empty()) {
+            logError("可能原因：{}", diagnosis);
+        } else {
+            logError("子进程输出：\n{}", output.substr(output.size() > 8000 ? output.size() - 8000 : 0));
+        }
+    }
+    return result;
 }
 
 // 函数用途：一次性读取整个文件内容
@@ -298,7 +463,7 @@ inline int runCommand(const std::string &command) {
 inline std::string readFileContents(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::in | std::ios::binary);
     if (!file) {
-        spdlog::debug("无法打开文件: {}", path.string());
+        logTrace("无法打开文件：{}", path.string());
         return {};
     }
     file.seekg(0, std::ios::end);
