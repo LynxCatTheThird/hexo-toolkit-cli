@@ -19,7 +19,7 @@ inline int hexoClean(std::string_view extraArguments = {}) {
 // 函数用途：启动 Hexo 本地预览服务器
 inline int hexoServer(std::string_view extraArguments = {}) {
     ScopedTimer totalTimer("本次操作执行总");
-    if (int cleanExitCode = hexoClean(); cleanExitCode != 0) return cleanExitCode;
+    if (int cleanExitCode = hexoClean(extraArguments); cleanExitCode != 0) return cleanExitCode;
     for (int portNumber = 4000; portNumber <= 4100; portNumber++) {
         std::string command = std::format("{}hexo server --port {}{}{}", config.packageManagerCommand, portNumber,
                                           extraArguments, commandOutputRedirect());
@@ -53,6 +53,7 @@ inline int hexoServer(std::string_view extraArguments = {}) {
                     return isPortInUse(portNumber);
                 });
                 if (auto exitCode = process->pollExitCode()) {
+                    if (process->wasInterruptedByTerminalSignal()) return 0;
                     logError("服务器启动失败（退出码 {}）{}", *exitCode, failureTraceHint());
                     return *exitCode;
                 }
@@ -71,18 +72,20 @@ inline int hexoServer(std::string_view extraArguments = {}) {
             // 服务器运行期间持续轮询进程状态，退出后再返回退出码。
             waitWithSpinner("服务器运行中", [&]() { return process->pollExitCode().has_value(); });
             int exitCode = process->pollExitCode().value_or(-1);
+            if (process->wasInterruptedByTerminalSignal()) return 0;
             if (exitCode != 0) logError("服务器已停止（退出码 {}）", exitCode);
             return exitCode;
         } else {
             logTrace("端口 {} 已占用", portNumber);
         }
     }
+    logError("无可用端口（4000–4100 均已被占用）");
     return 1;
 }
 
 // 函数用途：生成 Hexo 静态文件及附属产物
 inline int hexoGenerate(std::string_view extraArguments = {}) {
-    if (int cleanExitCode = hexoClean(); cleanExitCode != 0) {
+    if (int cleanExitCode = hexoClean(extraArguments); cleanExitCode != 0) {
         logError("初始清理失败");
         return cleanExitCode;
     }
@@ -111,7 +114,7 @@ inline int hexoGenerate(std::string_view extraArguments = {}) {
         }
 
         for (const auto &[keyword, command] : config.additionalTools) {
-            if (isDependenciesPresent(dependencyContent, keyword)) {
+            if (isDependenciesPresent(dependencyContent, keyword, config.dependenciesSearchingFile)) {
                 logStep("运行 {}", keyword);
                 int toolExitCode =
                     runCommand(std::format("{}{}{}", config.packageManagerCommand, command, commandOutputRedirect()));
@@ -146,7 +149,7 @@ inline int hexoDeploy(std::string_view extraArguments = {}) {
         logError("hexo deploy 失败（退出码 {}）{}", deployExitCode, failureTraceHint());
         return deployExitCode;
     }
-    int finalCleanExitCode = hexoClean();
+    int finalCleanExitCode = hexoClean(extraArguments);
     if (finalCleanExitCode != 0) logError("部署已完成，但最终清理失败");
     return finalCleanExitCode;
 }

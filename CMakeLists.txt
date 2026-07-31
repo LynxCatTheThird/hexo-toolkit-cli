@@ -30,7 +30,7 @@ FetchContent_MakeAvailable(spdlog)
 FetchContent_Declare(
   rapidyaml
   GIT_REPOSITORY https://github.com/biojppm/rapidyaml
-  GIT_TAG        v0.13.0
+  GIT_TAG        v0.16.0
   GIT_SHALLOW    ON
 )
 FetchContent_MakeAvailable(rapidyaml)
@@ -148,6 +148,12 @@ if(BUILD_TESTING)
     set_tests_properties(cli_trace_dry_run PROPERTIES
                          PASS_REGULAR_EXPRESSION "前缀匹配：deploy"
                          FAIL_REGULAR_EXPRESSION "2>&1")
+
+    if(WIN32)
+        add_test(NAME cli_rejects_unsafe_windows_arguments
+                 COMMAND $<TARGET_FILE:${PROJECT_NAME}> build --dry-run --project "${HEXO_TEST_PROJECT}" -- "&")
+        set_tests_properties(cli_rejects_unsafe_windows_arguments PROPERTIES WILL_FAIL TRUE)
+    endif()
 endif()
 
 # UPX 产物压缩

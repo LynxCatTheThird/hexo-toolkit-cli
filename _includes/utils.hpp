@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cctype>            // std::tolower
 #include <chrono>            // std::chrono
+#include <exception>         // std::exception
 #include <filesystem>        // std::filesystem
 #include <format>            // std::format
 #include <fstream>           // std::ifstream
@@ -14,8 +14,13 @@
 #include <vector>            // std::vector
 
 #include "logs.hpp"
+#include "ryml.hpp"      // IWYU pragma: keep
+#include "ryml_std.hpp"  // IWYU pragma: keep
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>   // CreateProcessA
 #include <winsock2.h>  // Windows Sockets API
 #pragma comment(lib, "ws2_32.lib")
@@ -38,6 +43,17 @@ struct WinsockInit {
 #include <unistd.h>      // close()
 
 #include <cerrno>  // errno, EINTR
+#endif
+
+#if !defined(_WIN32)
+inline volatile sig_atomic_t foregroundChildProcessGroupId = -1;
+inline volatile sig_atomic_t foregroundTerminalSignal = 0;
+
+inline void forwardTerminalSignalToChildProcessGroup(int signalNumber) {
+    foregroundTerminalSignal = signalNumber;
+    const sig_atomic_t processGroupId = foregroundChildProcessGroupId;
+    if (processGroupId > 0) kill(-static_cast<pid_t>(processGroupId), signalNumber);
+}
 #endif
 
 inline bool dryRunEnabled = false;
@@ -106,6 +122,17 @@ inline std::string joinShellArguments(const std::vector<std::string> &arguments)
     return result;
 }
 
+inline bool hasUnsafeShellArguments(const std::vector<std::string> &arguments) {
+#if defined(_WIN32)
+    for (const auto &argument : arguments) {
+        if (argument.find_first_of("\"%&|<>()^!\r\n") != std::string::npos) return true;
+    }
+#else
+    static_cast<void>(arguments);
+#endif
+    return false;
+}
+
 inline std::string analyzeCommandOutput(std::string_view output) {
     auto containsAny = [output](std::initializer_list<std::string_view> terms) {
         for (auto term : terms) {
@@ -128,9 +155,31 @@ inline std::string analyzeCommandOutput(std::string_view output) {
 // 参数：
 //   fileContent: 文件的完整内容字符串
 //   dependencies: 要查找的依赖项
-// 返回值：若字符串中存在指定的依赖项则返回 true，否则返回 false
-inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependencies) {
+// 返回值：若依赖声明中存在指定的包名则返回 true，否则返回 false
+inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependencies,
+                                  const std::filesystem::path &dependencyFile = "package.json") {
     if (fileContent.empty()) return false;
+
+    // package.json 是 JSON（也兼容 YAML 子集）；只检查 npm 认可的依赖字段，避免 scripts 等同名键误触发。
+    if (dependencyFile.filename() == "package.json" &&
+        fileContent.find_first_not_of(" \t\r\n") != std::string_view::npos &&
+        fileContent[fileContent.find_first_not_of(" \t\r\n")] == '{') {
+        try {
+            ryml::Tree tree = ryml::parse_in_arena(ryml::csubstr(fileContent.data(), fileContent.size()));
+            ryml::NodeRef root = tree.rootref();
+            const std::string dependencyName(dependencies);
+            for (const char *sectionName :
+                 {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}) {
+                if (root.has_child(sectionName) && root[sectionName].is_map() &&
+                    root[sectionName].has_child(ryml::to_csubstr(dependencyName))) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (const std::exception &) {
+            return false;
+        }
+    }
 
     const std::string quotedDependency = std::format("\"{}\"", dependencies);
     if (fileContent.find(quotedDependency) != std::string_view::npos) return true;
@@ -183,8 +232,8 @@ struct ManagedProcess {
 #else
     pid_t pid = -1;
     pid_t processGroupId = -1;
-    // 与 std::system() 行为一致：子进程运行期间父进程忽略 SIGINT/SIGQUIT，
-    // 让 Ctrl+C 仅由子进程处理，父进程在子进程退出后正常清理终端状态。
+    int terminalSignal = 0;
+    // 子进程使用独立进程组，父进程临时接管终端信号并转发给整个子进程树。
     struct sigaction oldSigInt{};
     struct sigaction oldSigQuit{};
     bool signalsSaved = false;
@@ -216,6 +265,7 @@ struct ManagedProcess {
 #else
         std::swap(pid, other.pid);
         std::swap(processGroupId, other.processGroupId);
+        std::swap(terminalSignal, other.terminalSignal);
         std::swap(oldSigInt, other.oldSigInt);
         std::swap(oldSigQuit, other.oldSigQuit);
         std::swap(signalsSaved, other.signalsSaved);
@@ -224,11 +274,31 @@ struct ManagedProcess {
         std::swap(exitCode, other.exitCode);
     }
 
+    bool wasInterruptedByTerminalSignal() const noexcept {
+#if defined(_WIN32)
+        return false;
+#else
+        return terminalSignal != 0;
+#endif
+    }
+
+    void captureTerminalSignal() noexcept {
+#if !defined(_WIN32)
+        if (foregroundChildProcessGroupId == processGroupId) {
+            terminalSignal = static_cast<int>(foregroundTerminalSignal);
+        }
+#endif
+    }
+
     void restoreSignals() noexcept {
 #if !defined(_WIN32)
         if (signalsSaved) {
             sigaction(SIGINT, &oldSigInt, nullptr);
             sigaction(SIGQUIT, &oldSigQuit, nullptr);
+            if (foregroundChildProcessGroupId == processGroupId) {
+                foregroundChildProcessGroupId = -1;
+                foregroundTerminalSignal = 0;
+            }
             signalsSaved = false;
         }
 #endif
@@ -274,8 +344,18 @@ struct ManagedProcess {
         process.jobHandle = job;
 #else
         // Unix 下仍使用 /bin/sh -c 执行命令，保持与原有命令字符串兼容。
+        sigset_t terminalSignals{};
+        sigset_t oldSignalMask{};
+        sigemptyset(&terminalSignals);
+        sigaddset(&terminalSignals, SIGINT);
+        sigaddset(&terminalSignals, SIGQUIT);
+        // 阻塞安装窗口内的终端信号，避免 Ctrl+C 落在 fork() 与转发处理器安装之间。
+        sigprocmask(SIG_BLOCK, &terminalSignals, &oldSignalMask);
         pid_t childPid = fork();
-        if (childPid < 0) return std::nullopt;
+        if (childPid < 0) {
+            sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
+            return std::nullopt;
+        }
         if (childPid == 0) {
             // 独立进程组允许父进程在超时或退出时终止整棵命令进程树。
             setpgid(0, 0);
@@ -289,6 +369,7 @@ struct ManagedProcess {
             }
             // 标记为 CI 环境，使 pnpm/npm 等跳过 ConfirmPrompt 而非因 EOF 报错退出。
             setenv("CI", "true", 0);
+            sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
             execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
             _exit(127);
         }
@@ -297,13 +378,17 @@ struct ManagedProcess {
         // 与子进程中的 setpgid 配合消除调度竞态；子进程已 exec 时的失败可忽略。
         setpgid(childPid, childPid);
 
-        // 父进程：保存并忽略 SIGINT/SIGQUIT，复刻 std::system() 的 POSIX 行为。
-        struct sigaction ignoreAction{};
-        ignoreAction.sa_handler = SIG_IGN;
-        sigemptyset(&ignoreAction.sa_mask);
-        sigaction(SIGINT, &ignoreAction, &process.oldSigInt);
-        sigaction(SIGQUIT, &ignoreAction, &process.oldSigQuit);
+        // 子进程处于独立进程组，终端信号仍会先到父进程；由父进程异步安全地转发给整棵子进程树。
+        struct sigaction forwardAction{};
+        forwardAction.sa_handler = forwardTerminalSignalToChildProcessGroup;
+        sigemptyset(&forwardAction.sa_mask);
+        forwardAction.sa_flags = SA_RESTART;
+        foregroundChildProcessGroupId = process.processGroupId;
+        foregroundTerminalSignal = 0;
+        sigaction(SIGINT, &forwardAction, &process.oldSigInt);
+        sigaction(SIGQUIT, &forwardAction, &process.oldSigQuit);
         process.signalsSaved = true;
+        sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
 #endif
         return process;
     }
@@ -340,14 +425,16 @@ struct ManagedProcess {
             finished = true;
             exitCode = -1;
             pid = -1;
+            captureTerminalSignal();
             restoreSignals();
             return exitCode;
         }
         finished = true;
-        exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
         pid = -1;
-        if (kill(-processGroupId, 0) < 0 && errno == ESRCH) processGroupId = -1;
+        captureTerminalSignal();
         restoreSignals();
+        if (kill(-processGroupId, 0) < 0 && errno == ESRCH) processGroupId = -1;
         return exitCode;
 #endif
     }
@@ -393,12 +480,15 @@ struct ManagedProcess {
             do {
                 waitResult = waitpid(pid, &status, 0);
             } while (waitResult < 0 && errno == EINTR);
-            if (waitResult > 0) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            if (waitResult > 0) {
+                exitCode =
+                    WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
+            }
             pid = -1;
         }
         finished = true;
-        processGroupId = -1;
         restoreSignals();
+        processGroupId = -1;
         return true;
 #endif
     }
@@ -447,10 +537,9 @@ inline int runCommand(const std::string &command) {
     std::error_code removeError;
     std::filesystem::remove(capturePath, removeError);
     if (result != 0 && !output.empty()) {
+        logError("子进程输出：\n{}", output.substr(output.size() > 8000 ? output.size() - 8000 : 0));
         if (auto diagnosis = analyzeCommandOutput(output); !diagnosis.empty()) {
             logError("可能原因：{}", diagnosis);
-        } else {
-            logError("子进程输出：\n{}", output.substr(output.size() > 8000 ? output.size() - 8000 : 0));
         }
     }
     return result;

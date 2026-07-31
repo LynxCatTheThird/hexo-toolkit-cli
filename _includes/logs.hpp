@@ -19,6 +19,8 @@
 #include <unistd.h>
 #endif
 
+inline bool loggerColorEnabled = true;
+
 inline bool isInteractiveTerminal() {
 #if defined(_WIN32)
     return _isatty(_fileno(stderr)) != 0;
@@ -29,10 +31,7 @@ inline bool isInteractiveTerminal() {
 
 inline void initLogger() {
     auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
-#if defined(_WIN32)
-    sink->set_color(spdlog::level::debug, FOREGROUND_INTENSITY);
-    sink->set_color(spdlog::level::trace, FOREGROUND_INTENSITY);
-#else
+#if !defined(_WIN32)
     sink->set_color(spdlog::level::debug, sink->dark);
     sink->set_color(spdlog::level::trace, sink->dark);
 #endif
@@ -42,7 +41,10 @@ inline void initLogger() {
     spdlog::set_level(spdlog::level::info);
 }
 
-inline void disableLoggerColor() { spdlog::set_pattern("%v"); }
+inline void disableLoggerColor() {
+    loggerColorEnabled = false;
+    spdlog::set_pattern("%v");
+}
 
 template <typename... Arguments>
 inline void logStep(spdlog::format_string_t<Arguments...> format, Arguments &&...arguments) {
@@ -107,7 +109,7 @@ class ScopedTimer {
 // 返回值：无
 template <std::invocable Predicate>
 inline void waitWithSpinner(std::string_view label, Predicate &&predicate, int intervalMilliseconds = 50) {
-    if (!isInteractiveTerminal()) {
+    if (!isInteractiveTerminal() || spdlog::get_level() > spdlog::level::info) {
         while (!predicate()) std::this_thread::sleep_for(std::chrono::milliseconds(intervalMilliseconds));
         return;
     }
@@ -127,14 +129,18 @@ inline void waitWithSpinner(std::string_view label, Predicate &&predicate, int i
         // 每隔若干次（可调）输出一个 spinner 字符，避免频繁刷新
         if (count % 10 == 0) {
             size_t spinnerIndex = (count / 10) % frameCount;
-            fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r[W] {} {}", label,
-                       spinnerFrames[spinnerIndex]);
+            if (loggerColorEnabled) {
+                fmt::print(stderr, fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold, "\r→ {} {}", label,
+                           spinnerFrames[spinnerIndex]);
+            } else {
+                fmt::print(stderr, "\r→ {} {}", label, spinnerFrames[spinnerIndex]);
+            }
             fflush(stderr);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(intervalMilliseconds));
         ++count;
     }
     // 覆盖清除行
-    fmt::print(stderr, "\r{}\r", std::string(label.size() + 6, ' '));
+    fmt::print(stderr, "\r{}\r", std::string(label.size() + 8, ' '));
     fflush(stderr);
 }

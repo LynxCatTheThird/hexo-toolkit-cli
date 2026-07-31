@@ -28,8 +28,23 @@ int main() {
 
     check(isDependenciesPresent(R"({"dependencies":{"hexo-swpp":"1.0.0"}})", "hexo-swpp"),
           "package.json dependency is detected");
+    check(isDependenciesPresent(R"({"devDependencies":{"hexo-swpp":"1.0.0"}})", "hexo-swpp"),
+          "package.json development dependency is detected");
+    check(!isDependenciesPresent(R"({"scripts":{"hexo-swpp":"hexo swpp"}})", "hexo-swpp"),
+          "package.json script names are not treated as dependencies");
     check(!isDependenciesPresent(R"({"dependencies":{"hexo-swpp-extra":"1.0.0"}})", "hexo-swpp"),
           "dependency names are matched exactly");
+    check(isDependenciesPresent("  /hexo-swpp@1.0.0:", "hexo-swpp", "pnpm-lock.yaml"),
+          "lock file dependencies retain exact entry matching");
+
+    check(!hasUnsafeShellArguments({"--config", "site config.yml"}), "ordinary pass-through arguments are accepted");
+#if defined(_WIN32)
+    check(hasUnsafeShellArguments({"\" & whoami"}), "cmd metacharacters are rejected in pass-through arguments");
+#endif
+
+    disableLoggerColor();
+    check(!loggerColorEnabled, "no-color mode also disables direct terminal output colors");
+    loggerColorEnabled = true;
 
     double threshold = 0.0;
     int timeout = 0;
@@ -96,6 +111,20 @@ int main() {
     }
     std::error_code removeError;
     std::filesystem::remove(marker, removeError);
+
+    auto signalProcess = ManagedProcess::start("sleep 5");
+    check(signalProcess.has_value(), "signal forwarding test starts");
+    if (signalProcess) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        kill(getpid(), SIGINT);
+        std::optional<int> signalExitCode;
+        for (int attempts = 0; attempts < 50 && !signalExitCode.has_value(); ++attempts) {
+            signalExitCode = signalProcess->pollExitCode();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        check(signalExitCode == 128 + SIGINT, "terminal signals are forwarded with the conventional exit code");
+        check(signalProcess->wasInterruptedByTerminalSignal(), "forwarded terminal signals are recorded");
+    }
 #endif
 
     if (failures != 0) std::cerr << failures << " test(s) failed\n";

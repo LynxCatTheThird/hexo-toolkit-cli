@@ -236,6 +236,10 @@ int main(int argc, char *argv[]) {
         logError("{} 不接受 Hexo 参数。", commandString);
         return 1;
     }
+    if (hasUnsafeShellArguments(passThroughArguments)) {
+        logError("Windows 下的 Hexo 参数不能包含 cmd.exe 特殊字符（\" % & | < > ( ) ^ !）。");
+        return 1;
+    }
 
     const std::string extraArguments = joinShellArguments(passThroughArguments);
     int exitCode = 0;

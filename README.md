@@ -49,12 +49,14 @@
 ./HexoTool deploy --dry-run
 ```
 
-使用 `--` 将后续参数传给 Hexo。`deploy` 会将这些参数传给 `generate` 和 `deploy`：
+使用 `--` 将后续参数传给 Hexo。构建与部署流程会将这些参数传给 `clean`、`generate` 和 `deploy`：
 
 ```bash
 ./HexoTool deploy -- --config staging.yml
 ./HexoTool server -- --draft --host 0.0.0.0
 ```
+
+在 Windows 上，透传参数不能包含 `cmd.exe` 会二次解释的字符：`"`、`%`、`&`、`|`、`<`、`>`、`(`、`)`、`^`、`!`。这可避免参数被当作额外命令执行。
 
 其他通用选项包括 `--quiet`、`--no-color`、`--log-file <路径>` 和 `--version`。`--log-file` 会追加保存构建、部署、清理、主题更新和依赖更新命令的 stdout/stderr；持续运行的 `server` 进程暂不写入该文件。命令失败时，终端显示退出码和输出尾部；如果输出包含常见错误关键词，还会附带一条可能原因提示。`-v` / `--verbose` 显示项目路径、配置和实际执行的命令；`-vv` / `--trace` 还会显示命令匹配、文件探测和计时信息。默认模式会隐藏外部命令的正常输出。帮助与版本信息输出到 stdout，运行状态和错误输出到 stderr。执行项目命令前，工具会检查目标目录中是否同时存在 `_config.yml` 与 `package.json`。
 
