@@ -14,16 +14,16 @@
 #include <vector>            // std::vector
 
 #include "logs.hpp"
-#include "ryml.hpp"      // IWYU pragma: keep
-#include "ryml_std.hpp"  // IWYU pragma: keep
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>   // CreateProcessA
+#include <windows.h>
 #include <winsock2.h>  // Windows Sockets API
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
+#endif
 
 // RAII 包装：确保 Winsock 在程序生命周期内只初始化一次
 // 避免 isPortOpen 在轮询循环中反复调用 WSAStartup/WSACleanup 的开销
@@ -40,12 +40,20 @@ struct WinsockInit {
 #include <netinet/in.h>  // AF_INET, INADDR_LOOPBACK
 #include <signal.h>      // kill
 #include <sys/wait.h>    // WIFEXITED, WEXITSTATUS
-#include <unistd.h>      // close()
+#include <termios.h>
+#include <unistd.h>  // close()
 
 #include <cerrno>  // errno, EINTR
 #endif
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+inline volatile LONG foregroundConsoleInterrupted = 0;
+inline BOOL WINAPI handleConsoleInterrupt(DWORD event) {
+    if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) return FALSE;
+    InterlockedExchange(&foregroundConsoleInterrupted, 1);
+    return TRUE;
+}
+#else
 inline volatile sig_atomic_t foregroundChildProcessGroupId = -1;
 inline volatile sig_atomic_t foregroundTerminalSignal = 0;
 
@@ -57,26 +65,7 @@ inline void forwardTerminalSignalToChildProcessGroup(int signalNumber) {
 #endif
 
 inline bool dryRunEnabled = false;
-inline bool traceOutputEnabled = false;
 inline std::filesystem::path commandLogFile;
-
-inline std::string_view commandOutputRedirect() {
-#if defined(_WIN32)
-    return traceOutputEnabled ? " > NUL" : " > NUL 2> NUL";
-#else
-    return traceOutputEnabled ? " > /dev/null" : " > /dev/null 2>&1";
-#endif
-}
-
-inline std::string failureTraceHint() { return traceOutputEnabled ? std::string{} : "。使用 -vv 查看原始输出"; }
-
-inline std::string commandForLog(std::string_view command) {
-    const std::string_view redirect = commandOutputRedirect();
-    if (!traceOutputEnabled && command.ends_with(redirect)) {
-        command.remove_suffix(redirect.size());
-    }
-    return std::string(command);
-}
 
 inline std::string quoteShellArgument(std::string_view argument) {
 #if defined(_WIN32)
@@ -102,7 +91,7 @@ inline std::string quoteShellArgument(std::string_view argument) {
     return quoted;
 #else
     std::string quoted = "'";
-    for (char character : argument) {
+    for (char const character : argument) {
         if (character == '\'')
             quoted += "'\\''";
         else
@@ -134,8 +123,8 @@ inline bool hasUnsafeShellArguments(const std::vector<std::string> &arguments) {
 }
 
 inline std::string analyzeCommandOutput(std::string_view output) {
-    auto containsAny = [output](std::initializer_list<std::string_view> terms) {
-        for (auto term : terms) {
+    auto const containsAny = [output](std::initializer_list<std::string_view> terms) {
+        for (auto const term : terms) {
             if (output.find(term) != std::string_view::npos) return true;
         }
         return false;
@@ -151,96 +140,30 @@ inline std::string analyzeCommandOutput(std::string_view output) {
     return {};
 }
 
-// 函数用途：检查缓存的文件内容中是否存在特定依赖项
-// 参数：
-//   fileContent: 文件的完整内容字符串
-//   dependencies: 要查找的依赖项
-// 返回值：若依赖声明中存在指定的包名则返回 true，否则返回 false
-inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependencies,
-                                  const std::filesystem::path &dependencyFile = "package.json") {
-    if (fileContent.empty()) return false;
-
-    // package.json 是 JSON（也兼容 YAML 子集）；只检查 npm 认可的依赖字段，避免 scripts 等同名键误触发。
-    if (dependencyFile.filename() == "package.json" &&
-        fileContent.find_first_not_of(" \t\r\n") != std::string_view::npos &&
-        fileContent[fileContent.find_first_not_of(" \t\r\n")] == '{') {
-        try {
-            ryml::Tree tree = ryml::parse_in_arena(ryml::csubstr(fileContent.data(), fileContent.size()));
-            ryml::NodeRef root = tree.rootref();
-            const std::string dependencyName(dependencies);
-            for (const char *sectionName :
-                 {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}) {
-                if (root.has_child(sectionName) && root[sectionName].is_map() &&
-                    root[sectionName].has_child(ryml::to_csubstr(dependencyName))) {
-                    return true;
-                }
-            }
-            return false;
-        } catch (const std::exception &) {
-            return false;
-        }
-    }
-
-    const std::string quotedDependency = std::format("\"{}\"", dependencies);
-    if (fileContent.find(quotedDependency) != std::string_view::npos) return true;
-
-    const std::string scopeDependency = std::format("/{}@", dependencies);
-    if (fileContent.find(scopeDependency) != std::string_view::npos) return true;
-
-    const std::string pnpmDependency = std::format("/{}:", dependencies);
-    return fileContent.find(pnpmDependency) != std::string_view::npos;
-}
-
-// 函数用途：判断给定端口是否已被占用（即能够成功连接）
-// 参数：port - 待判断的端口号
-// 返回值：若端口已被占用（有进程在监听）则返回 true，否则返回 false
-inline bool isPortInUse(int port) {
-#if defined(_WIN32)
-    // 保证局部 static 的初始化是线程安全的，Winsock 只会初始化一次
-    static detail::WinsockInit winsockInitialization;
-    SOCKET socketDescriptor = socket(AF_INET, SOCK_STREAM, 0);
-    if (socketDescriptor == INVALID_SOCKET) return false;
-#else
-    int socketDescriptor = socket(AF_INET, SOCK_STREAM, 0);  // 创建一个套接字
-    if (socketDescriptor < 0) return false;                  // 若创建套接字失败返回端口未打开
-#endif
-
-    struct sockaddr_in serverAddress;
-    serverAddress.sin_family = AF_INET;                      // 地址族为IPv4
-    serverAddress.sin_port = htons(port);                    // 设置端口号
-    serverAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // 设置为本地回环地址
-
-    bool isOpen = false;  // 初始化端口状态为未打开
-    if (connect(socketDescriptor, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) == 0) {
-        isOpen = true;  // 连接成功，端口被占用
-    }
-
-#if defined(_WIN32)
-    closesocket(socketDescriptor);  // 关闭套接字（WSACleanup 由 ~WinsockInit 负责）
-#else
-    close(socketDescriptor);  // 关闭套接字
-#endif
-
-    return isOpen;
-}
-
-struct ManagedProcess {
+class ManagedProcess {
 #if defined(_WIN32)
     HANDLE processHandle = nullptr;
     HANDLE threadHandle = nullptr;
     HANDLE jobHandle = nullptr;
+    HANDLE outputRead = nullptr;
+    bool consoleHandlerInstalled = false;
+    bool consoleInterrupted = false;
 #else
+    int outputRead = -1;
+    pid_t terminalOwner = -1;
     pid_t pid = -1;
     pid_t processGroupId = -1;
     int terminalSignal = 0;
     // 子进程使用独立进程组，父进程临时接管终端信号并转发给整个子进程树。
     struct sigaction oldSigInt{};
     struct sigaction oldSigQuit{};
+    struct sigaction oldSigTerm{};
     bool signalsSaved = false;
 #endif
     bool finished = false;
     int exitCode = -1;
 
+   public:
     // pid 初始为 -1，terminate() 会提前检查 pid <= 0 而跳过，移动后的空对象不会误杀进程
     ManagedProcess() = default;
     ManagedProcess(const ManagedProcess &) = delete;
@@ -251,23 +174,43 @@ struct ManagedProcess {
     ManagedProcess &operator=(ManagedProcess &&other) noexcept {
         if (this == &other) return *this;
         cleanup();
+#if defined(_WIN32)
+        if (outputRead) CloseHandle(outputRead);
+        outputRead = nullptr;
+#else
+        if (outputRead >= 0) close(outputRead);
+        outputRead = -1;
+#endif
         swap(other);
         return *this;
     }
 
-    ~ManagedProcess() { cleanup(); }
+    ~ManagedProcess() {
+        cleanup();
+#if defined(_WIN32)
+        if (outputRead) CloseHandle(outputRead);
+#else
+        if (outputRead >= 0) close(outputRead);
+#endif
+    }
 
     void swap(ManagedProcess &other) noexcept {
 #if defined(_WIN32)
         std::swap(processHandle, other.processHandle);
         std::swap(threadHandle, other.threadHandle);
         std::swap(jobHandle, other.jobHandle);
+        std::swap(consoleHandlerInstalled, other.consoleHandlerInstalled);
+        std::swap(consoleInterrupted, other.consoleInterrupted);
+        std::swap(outputRead, other.outputRead);
 #else
+        std::swap(outputRead, other.outputRead);
+        std::swap(terminalOwner, other.terminalOwner);
         std::swap(pid, other.pid);
         std::swap(processGroupId, other.processGroupId);
         std::swap(terminalSignal, other.terminalSignal);
         std::swap(oldSigInt, other.oldSigInt);
         std::swap(oldSigQuit, other.oldSigQuit);
+        std::swap(oldSigTerm, other.oldSigTerm);
         std::swap(signalsSaved, other.signalsSaved);
 #endif
         std::swap(finished, other.finished);
@@ -276,9 +219,9 @@ struct ManagedProcess {
 
     bool wasInterruptedByTerminalSignal() const noexcept {
 #if defined(_WIN32)
-        return false;
+        return consoleInterrupted;
 #else
-        return terminalSignal != 0;
+        return terminalSignal == SIGINT || terminalSignal == SIGQUIT;
 #endif
     }
 
@@ -291,10 +234,21 @@ struct ManagedProcess {
     }
 
     void restoreSignals() noexcept {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+        if (consoleHandlerInstalled) {
+            consoleInterrupted = InterlockedExchange(&foregroundConsoleInterrupted, 0) != 0;
+            SetConsoleCtrlHandler(handleConsoleInterrupt, FALSE);
+            consoleHandlerInstalled = false;
+        }
+#else
+        if (terminalOwner > 0) {
+            setTerminalForeground(terminalOwner);
+            terminalOwner = -1;
+        }
         if (signalsSaved) {
             sigaction(SIGINT, &oldSigInt, nullptr);
             sigaction(SIGQUIT, &oldSigQuit, nullptr);
+            sigaction(SIGTERM, &oldSigTerm, nullptr);
             if (foregroundChildProcessGroupId == processGroupId) {
                 foregroundChildProcessGroupId = -1;
                 foregroundTerminalSignal = 0;
@@ -313,19 +267,65 @@ struct ManagedProcess {
         terminate();
     }
 
-    static std::optional<ManagedProcess> start(const std::string &command) {
+    // The parent temporarily yields the terminal so interactive child tools can read stdin.
+#if !defined(_WIN32)
+    static void setTerminalForeground(pid_t group) noexcept {
+        struct sigaction ignored{}, previous{};
+        ignored.sa_handler = SIG_IGN;
+        sigemptyset(&ignored.sa_mask);
+        sigaction(SIGTTOU, &ignored, &previous);
+        tcsetpgrp(STDIN_FILENO, group);
+        sigaction(SIGTTOU, &previous, nullptr);
+    }
+#endif
+
+    // Read at most one chunk per iteration so a busy child cannot starve signal/exit handling.
+    std::string readOutput() {
+        char buffer[16384];
+#if defined(_WIN32)
+        if (!outputRead) return {};
+        DWORD available = 0, count = 0;
+        if (!PeekNamedPipe(outputRead, nullptr, 0, nullptr, &available, nullptr) || available == 0) return {};
+        if (!ReadFile(outputRead, buffer, sizeof(buffer), &count, nullptr)) return {};
+        return std::string(buffer, count);
+#else
+        if (outputRead < 0) return {};
+        const auto count = read(outputRead, buffer, sizeof(buffer));
+        return count > 0 ? std::string(buffer, static_cast<size_t>(count)) : std::string{};
+#endif
+    }
+
+    static std::optional<ManagedProcess> start(const std::string &command, bool captureOutput = false) {
         ManagedProcess process;
 #if defined(_WIN32)
         // 现有命令包含重定向和 &&，需要由 cmd.exe 解释。Job Object 确保子孙进程一并回收。
         STARTUPINFOA startupInfo{};
         startupInfo.cb = sizeof(startupInfo);
+        HANDLE outputWrite = nullptr;
+        HANDLE inputCopy = nullptr;
+        if (captureOutput) {
+            SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+            if (!CreatePipe(&process.outputRead, &outputWrite, &attributes, 0)) return std::nullopt;
+            SetHandleInformation(process.outputRead, HANDLE_FLAG_INHERIT, 0);
+            const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+            if (input != nullptr && input != INVALID_HANDLE_VALUE)
+                DuplicateHandle(GetCurrentProcess(), input, GetCurrentProcess(), &inputCopy, 0, TRUE,
+                                DUPLICATE_SAME_ACCESS);
+            startupInfo.dwFlags |= STARTF_USESTDHANDLES;
+            startupInfo.hStdOutput = outputWrite;
+            startupInfo.hStdError = outputWrite;
+            startupInfo.hStdInput = inputCopy;
+        }
         std::string mutableCommand = std::format("cmd.exe /D /S /C \"{}\"", command);
         PROCESS_INFORMATION processInformation{};
-        if (!CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
-                            CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation)) {
-            return std::nullopt;
-        }
+        const BOOL created = CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, captureOutput,
+                                            CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
+        if (outputWrite) CloseHandle(outputWrite);
+        if (inputCopy) CloseHandle(inputCopy);
+        if (!created) return std::nullopt;
 
+        InterlockedExchange(&foregroundConsoleInterrupted, 0);
+        process.consoleHandlerInstalled = SetConsoleCtrlHandler(handleConsoleInterrupt, TRUE) != FALSE;
         HANDLE job = CreateJobObjectA(nullptr, nullptr);
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInformation{};
         jobInformation.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -337,6 +337,7 @@ struct ManagedProcess {
             CloseHandle(processInformation.hThread);
             CloseHandle(processInformation.hProcess);
             if (job != nullptr) CloseHandle(job);
+            process.restoreSignals();
             return std::nullopt;
         }
         process.processHandle = processInformation.hProcess;
@@ -344,41 +345,53 @@ struct ManagedProcess {
         process.jobHandle = job;
 #else
         // Unix 下仍使用 /bin/sh -c 执行命令，保持与原有命令字符串兼容。
+        int outputPipe[2] = {-1, -1};
+        if (captureOutput) {
+            if (pipe(outputPipe) < 0) return std::nullopt;
+            process.outputRead = outputPipe[0];
+            fcntl(outputPipe[0], F_SETFL, O_NONBLOCK);
+            fcntl(outputPipe[0], F_SETFD, FD_CLOEXEC);
+        }
         sigset_t terminalSignals{};
         sigset_t oldSignalMask{};
         sigemptyset(&terminalSignals);
         sigaddset(&terminalSignals, SIGINT);
         sigaddset(&terminalSignals, SIGQUIT);
+        sigaddset(&terminalSignals, SIGTERM);
         // 阻塞安装窗口内的终端信号，避免 Ctrl+C 落在 fork() 与转发处理器安装之间。
         sigprocmask(SIG_BLOCK, &terminalSignals, &oldSignalMask);
-        pid_t childPid = fork();
+        const bool ownsTerminal = isatty(STDIN_FILENO) && tcgetpgrp(STDIN_FILENO) == getpgrp();
+        pid_t const childPid = fork();
         if (childPid < 0) {
+            if (outputPipe[1] >= 0) close(outputPipe[1]);
             sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
             return std::nullopt;
         }
         if (childPid == 0) {
             // 独立进程组允许父进程在超时或退出时终止整棵命令进程树。
             setpgid(0, 0);
-            // 将子进程 stdin 重定向到 /dev/null，避免 Node.js 工具链的 readline 交互冲突。
-            int devNull = open("/dev/null", O_RDONLY);
-            if (devNull >= 0) {
-                if (devNull != STDIN_FILENO) {
-                    dup2(devNull, STDIN_FILENO);
-                    close(devNull);
-                }
+            if (captureOutput) {
+                close(outputPipe[0]);
+                dup2(outputPipe[1], STDOUT_FILENO);
+                dup2(outputPipe[1], STDERR_FILENO);
+                if (outputPipe[1] != STDOUT_FILENO && outputPipe[1] != STDERR_FILENO) close(outputPipe[1]);
             }
-            // 标记为 CI 环境，使 pnpm/npm 等跳过 ConfirmPrompt 而非因 EOF 报错退出。
-            setenv("CI", "true", 0);
+            if (ownsTerminal) setTerminalForeground(getpgrp());
             sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
             execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
             _exit(127);
         }
+        if (outputPipe[1] >= 0) close(outputPipe[1]);
         process.pid = childPid;
         process.processGroupId = childPid;
         // 与子进程中的 setpgid 配合消除调度竞态；子进程已 exec 时的失败可忽略。
         setpgid(childPid, childPid);
+        if (ownsTerminal) {
+            process.terminalOwner = getpgrp();
+            setTerminalForeground(childPid);
+        }
 
-        // 子进程处于独立进程组，终端信号仍会先到父进程；由父进程异步安全地转发给整棵子进程树。
+        // Forward signals sent to the wrapper; terminal-generated signals go directly to the foreground group.
         struct sigaction forwardAction{};
         forwardAction.sa_handler = forwardTerminalSignalToChildProcessGroup;
         sigemptyset(&forwardAction.sa_mask);
@@ -387,6 +400,7 @@ struct ManagedProcess {
         foregroundTerminalSignal = 0;
         sigaction(SIGINT, &forwardAction, &process.oldSigInt);
         sigaction(SIGQUIT, &forwardAction, &process.oldSigQuit);
+        sigaction(SIGTERM, &forwardAction, &process.oldSigTerm);
         process.signalsSaved = true;
         sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
 #endif
@@ -414,11 +428,12 @@ struct ManagedProcess {
         threadHandle = nullptr;
         processHandle = nullptr;
         jobHandle = nullptr;
+        restoreSignals();
         return exitCode;
 #else
         // WNOHANG 用于轮询子进程，而不是一直阻塞主线程。
         int status = 0;
-        pid_t result = waitpid(pid, &status, WNOHANG);
+        pid_t const result = waitpid(pid, &status, WNOHANG);
         if (result == 0) return std::nullopt;
         if (result < 0) {
             if (errno == EINTR) return std::nullopt;
@@ -459,6 +474,7 @@ struct ManagedProcess {
         threadHandle = nullptr;
         processHandle = nullptr;
         jobHandle = nullptr;
+        restoreSignals();
         return true;
 #else
         // 先温和退出，超时后再强制杀掉，减少残留僵尸进程的概率。
@@ -494,72 +510,68 @@ struct ManagedProcess {
     }
 };
 
-// 函数用途：跨平台执行系统命令并返回真实的退出码
-// 参数：
-//   command: 要执行的命令行指令
-// 返回值：命令执行完毕后的实际退出状态码
-inline std::string readFileContents(const std::filesystem::path &path);
-
-inline int runCommand(const std::string &command) {
+// Commands share one bounded output path: stream to the requested log and keep only an error tail.
+inline int runCommand(const std::string &command, bool liveOutput = false, bool interruptIsSuccess = false) {
     if (dryRunEnabled) {
-        spdlog::info("  $ {}", commandForLog(command));
+        spdlog::info("  $ {}", command);
         return 0;
     }
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    const auto capturePath = std::filesystem::temp_directory_path() / std::format("hexo-toolkit-command-{}.log", stamp);
-    std::string executableCommand = command;
-    const std::string_view redirect = commandOutputRedirect();
-    if (executableCommand.ends_with(redirect)) executableCommand.resize(executableCommand.size() - redirect.size());
-    executableCommand = "( " + executableCommand + " ) > " + quoteShellArgument(capturePath.string()) + " 2>&1";
-    logDetail("$ {}", commandForLog(command));
-    auto process = ManagedProcess::start(executableCommand);
-    if (!process) return -1;
-
-    int result = -1;
-    while (true) {
-        if (auto exitCode = process->pollExitCode()) {
-            result = *exitCode;
+    std::ofstream log;
+    if (!commandLogFile.empty()) {
+        log.open(commandLogFile, std::ios::out | std::ios::app | std::ios::binary);
+        if (!log) {
+            logError("无法写入日志文件：{}", commandLogFile.string());
+            return 1;
+        }
+        log << "\n===== " << command << " =====\n";
+        log.flush();
+        if (!log) {
+            logError("无法写入日志文件：{}", commandLogFile.string());
+            return 1;
+        }
+    }
+    logDetail("$ {}", command);
+    auto process = ManagedProcess::start(command, true);
+    if (!process) {
+        logError("无法启动命令：{}", command);
+        return 1;
+    }
+    const bool showOutput =
+        (liveOutput && spdlog::should_log(spdlog::level::info)) || spdlog::should_log(spdlog::level::debug);
+    std::string tail;
+    bool logFailed = false;
+    auto const consume = [&](const std::string &chunk) {
+        if (log.is_open() && !logFailed) {
+            log.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+            log.flush();
+            if (!log) {
+                logFailed = true;
+                logError("写入日志失败：{}", commandLogFile.string());
+            }
+        }
+        if (showOutput) {
+            std::fwrite(chunk.data(), 1, chunk.size(), stderr);
+            std::fflush(stderr);
+        }
+        tail += chunk;
+        if (tail.size() > 8000) tail.erase(0, tail.size() - 8000);
+    };
+    int result;
+    for (;;) {
+        auto chunk = process->readOutput();
+        if (!chunk.empty()) consume(chunk);
+        if (auto code = process->pollExitCode()) {
+            result = *code;
+            // The leader has exited; drain already buffered output without waiting for detached descendants.
+            for (int drains = 0; drains < 64 && !(chunk = process->readOutput()).empty(); ++drains) consume(chunk);
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (chunk.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    std::string output = readFileContents(capturePath);
-    if (!commandLogFile.empty()) {
-        std::ifstream source(capturePath, std::ios::in | std::ios::binary);
-        std::ofstream destination(commandLogFile, std::ios::out | std::ios::app | std::ios::binary);
-        if (source && destination) {
-            destination << "\n===== " << commandForLog(command) << " =====\n";
-            destination << source.rdbuf();
-        } else {
-            spdlog::error("无法写入日志文件：{}", commandLogFile.string());
-        }
+    if (interruptIsSuccess && (process->wasInterruptedByTerminalSignal() || result == 130 || result == 131)) result = 0;
+    if (result != 0 && !tail.empty()) {
+        if (!showOutput) logError("子进程输出：\n{}", tail);
+        if (auto diagnosis = analyzeCommandOutput(tail); !diagnosis.empty()) logError("可能原因：{}", diagnosis);
     }
-    std::error_code removeError;
-    std::filesystem::remove(capturePath, removeError);
-    if (result != 0 && !output.empty()) {
-        logError("子进程输出：\n{}", output.substr(output.size() > 8000 ? output.size() - 8000 : 0));
-        if (auto diagnosis = analyzeCommandOutput(output); !diagnosis.empty()) {
-            logError("可能原因：{}", diagnosis);
-        }
-    }
-    return result;
-}
-
-// 函数用途：一次性读取整个文件内容
-// 参数：
-//   path: 要读取的目标文件路径
-// 返回值：包含文件所有内容的 std::string，如果读取失败则返回空字符串
-inline std::string readFileContents(const std::filesystem::path &path) {
-    std::ifstream file(path, std::ios::in | std::ios::binary);
-    if (!file) {
-        logTrace("无法打开文件：{}", path.string());
-        return {};
-    }
-    file.seekg(0, std::ios::end);
-    std::streamsize size = file.tellg();
-    if (size <= 0) return {};
-    std::string content(static_cast<size_t>(size), '\0');
-    file.seekg(0, std::ios::beg);
-    file.read(content.data(), size);
-    return content;
+    return result == 0 && logFailed ? 1 : result;
 }

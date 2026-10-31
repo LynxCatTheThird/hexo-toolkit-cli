@@ -33,66 +33,20 @@ FetchContent_Declare(
   GIT_TAG        v0.16.0
   GIT_SHALLOW    ON
 )
+set(RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS ON CACHE BOOL "Report YAML errors as exceptions" FORCE)
 FetchContent_MakeAvailable(rapidyaml)
 
-# 目标定义与 Unity Build 加速编译
 add_executable(${PROJECT_NAME} main.cpp)
-set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD ON)
 target_compile_definitions(${PROJECT_NAME} PRIVATE HEXO_TOOL_VERSION="${PROJECT_VERSION}")
-
-target_precompile_headers(${PROJECT_NAME} PRIVATE 
-    <spdlog/spdlog.h>
-)
-
 target_include_directories(${PROJECT_NAME} PRIVATE _includes)
-
-# PGO 编译开关
-# 用法: cmake -B build -DENABLE_PGO_GEN=ON (生成插桩文件) -> 运行程序 -> cmake -B build -DENABLE_PGO_USE=ON (使用配置优化)
-option(ENABLE_PGO_GEN "Enable PGO generation" OFF)
-option(ENABLE_PGO_USE "Enable PGO usage" OFF)
-option(ENABLE_NATIVE_ARCH "Build with -march=native for the current CPU" OFF)
-option(ENABLE_STRIP_SYMBOLS "Strip symbols from the output binary" OFF)
-
-# 编译选项与优化
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic -Os -fstrict-aliasing)
-    target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections)
-    if(ENABLE_NATIVE_ARCH)
-        target_compile_options(${PROJECT_NAME} PRIVATE -march=native)
+function(hexo_enable_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /utf-8)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow)
     endif()
-    if(ENABLE_STRIP_SYMBOLS)
-        target_link_options(${PROJECT_NAME} PRIVATE -s)
-    endif()
-    
-    # 启用 mold 或 lld 链接器
-    find_program(MOLD_LINKER mold)
-    find_program(LLD_LINKER lld)
-    if(MOLD_LINKER)
-        target_link_options(${PROJECT_NAME} PRIVATE -fuse-ld=mold)
-    elseif(LLD_LINKER)
-        target_link_options(${PROJECT_NAME} PRIVATE -fuse-ld=lld)
-    endif()
-
-    # 处理 PGO 参数
-    if(ENABLE_PGO_GEN)
-        target_compile_options(${PROJECT_NAME} PRIVATE -fprofile-generate)
-        target_link_options(${PROJECT_NAME} PRIVATE -fprofile-generate)
-    elseif(ENABLE_PGO_USE)
-        target_compile_options(${PROJECT_NAME} PRIVATE -fprofile-use -fprofile-correction)
-        target_link_options(${PROJECT_NAME} PRIVATE -fprofile-use)
-    endif()
-
-elseif(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /Gy /Gw /O2 /utf-8)
-    target_link_options(${PROJECT_NAME} PRIVATE /OPT:REF /OPT:ICF /DEBUG:NONE)
-endif()
-
-# 开启 LTO (插桩收集 PGO 数据时关闭 LTO 避免冲突)
-include(CheckIPOSupported)
-check_ipo_supported(RESULT ipo_supported)
-if(ipo_supported AND NOT ENABLE_PGO_GEN)
-    set_target_properties(${PROJECT_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-endif()
+endfunction()
+hexo_enable_warnings(${PROJECT_NAME})
 
 # 链接库
 target_link_libraries(${PROJECT_NAME} PRIVATE 
@@ -109,10 +63,14 @@ if(BUILD_TESTING)
     add_executable(HexoToolTests tests/core_tests.cpp)
     target_include_directories(HexoToolTests PRIVATE _includes)
     target_link_libraries(HexoToolTests PRIVATE spdlog::spdlog ryml)
+    hexo_enable_warnings(HexoToolTests)
     if(WIN32)
         target_link_libraries(HexoToolTests PRIVATE ws2_32)
     endif()
 
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME workflows COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/workflow_tests.py" $<TARGET_FILE:${PROJECT_NAME}>)
+    set_tests_properties(workflows PROPERTIES TIMEOUT 120)
     add_test(NAME core COMMAND HexoToolTests)
     add_test(NAME cli_help COMMAND $<TARGET_FILE:${PROJECT_NAME}> help)
     set_tests_properties(cli_help PROPERTIES PASS_REGULAR_EXPRESSION "deploy    生成并部署（一条龙）")
@@ -146,8 +104,13 @@ if(BUILD_TESTING)
     add_test(NAME cli_trace_dry_run
              COMMAND $<TARGET_FILE:${PROJECT_NAME}> deploy -vv --dry-run --project "${HEXO_TEST_PROJECT}")
     set_tests_properties(cli_trace_dry_run PROPERTIES
-                         PASS_REGULAR_EXPRESSION "前缀匹配：deploy"
+                         PASS_REGULAR_EXPRESSION "命令匹配：deploy"
                          FAIL_REGULAR_EXPRESSION "2>&1")
+
+    add_test(NAME cli_packages_alias COMMAND $<TARGET_FILE:${PROJECT_NAME}> pkg --dry-run --project "${HEXO_TEST_PROJECT}")
+    set_tests_properties(cli_packages_alias PROPERTIES PASS_REGULAR_EXPRESSION "npm-check-updates")
+    add_test(NAME cli_rejects_unknown_option COMMAND $<TARGET_FILE:${PROJECT_NAME}> --hel)
+    set_tests_properties(cli_rejects_unknown_option PROPERTIES WILL_FAIL TRUE)
 
     if(WIN32)
         add_test(NAME cli_rejects_unsafe_windows_arguments
@@ -155,12 +118,3 @@ if(BUILD_TESTING)
         set_tests_properties(cli_rejects_unsafe_windows_arguments PROPERTIES WILL_FAIL TRUE)
     endif()
 endif()
-
-# UPX 产物压缩
-# find_program(UPX_PROGRAM upx)
-# if(UPX_PROGRAM)
-#     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-#         COMMAND ${UPX_PROGRAM} --best --lzma $<TARGET_FILE:${PROJECT_NAME}>
-#         COMMENT "Compressing binary with UPX"
-#     )
-# endif()
