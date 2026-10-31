@@ -1,14 +1,28 @@
+#if !defined(_WIN32)
+#include <signal.h>
+#include <unistd.h>
+#endif
+
 #include <chrono>
+#include <cmath>
+#include <csignal>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <string_view>
+#include <system_error>
 #include <thread>
 
 #include "algorithms.hpp"
+#include "commands.hpp"
 #include "configs.hpp"
-#include "utils.hpp"
+#include "dependencies.hpp"
+#include "logs.hpp"
+#include "process.hpp"
 
 namespace {
 int failures = 0;
@@ -20,11 +34,15 @@ void check(bool condition, std::string_view message) {
 }
 }  // namespace
 
-int main() {
+static int runTests() {
     check(isPrefixOf("bui", "build"), "command prefixes are accepted");
     check(!isPrefixOf("builds", "build"), "longer command is not a prefix");
     check(getJaroWinklerSimilarity("build", "build") == 1.0, "identical commands have full similarity");
     check(getJaroWinklerSimilarity("build", "server") < 0.85, "unrelated commands stay below threshold");
+    check(std::abs(getJaroWinklerSimilarity("MARTHA", "MARHTA") - 0.9611111111111111) < 1e-12,
+          "standard transposition example has the expected similarity");
+    check(std::abs(getJaroWinklerSimilarity("abcdef", "bcadef") - 11.0 / 12.0) < 1e-12,
+          "odd mismatches preserve fractional transpositions");
 
     check(isDependenciesPresent(R"({"dependencies":{"hexo-swpp":"1.0.0"}})", "hexo-swpp"),
           "package.json dependency is detected");
@@ -34,8 +52,8 @@ int main() {
           "package.json script names are not treated as dependencies");
     check(!isDependenciesPresent(R"({"dependencies":{"hexo-swpp-extra":"1.0.0"}})", "hexo-swpp"),
           "dependency names are matched exactly");
-    check(isDependenciesPresent("  /hexo-swpp@1.0.0:", "hexo-swpp", "pnpm-lock.yaml"),
-          "lock file dependencies retain exact entry matching");
+    check(!isDependenciesPresent("  /hexo-swpp@1.0.0:", "hexo-swpp", "pnpm-lock.yaml"),
+          "lock entries do not count as direct dependencies");
 
     check(!hasUnsafeShellArguments({"--config", "site config.yml"}), "ordinary pass-through arguments are accepted");
 #if defined(_WIN32)
@@ -43,8 +61,41 @@ int main() {
 #endif
 
     disableLoggerColor();
-    check(!loggerColorEnabled, "no-color mode also disables direct terminal output colors");
-    loggerColorEnabled = true;
+
+    check(!isDependenciesPresent("[]", "hexo-swpp"), "non-object package manifests have no dependencies");
+    check(!isDependenciesPresent("{broken", "hexo-swpp"), "invalid package manifests do not abort");
+    const auto originalDirectory = std::filesystem::current_path();
+    const auto detectionDirectory =
+        std::filesystem::temp_directory_path() /
+        std::format("hexo-toolkit-detection-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+    std::filesystem::create_directories(detectionDirectory);
+    std::ofstream(detectionDirectory / "package.json") << "{}";
+    std::ofstream(detectionDirectory / "pnpm-lock.yaml") << "lockfileVersion: 9\n";
+    std::filesystem::current_path(detectionDirectory);
+    Config detectedConfig;
+    detectedConfig.detectPackageManager();
+    check(detectedConfig.packageManager == "pnpm", "pnpm lock file selects pnpm");
+    std::filesystem::current_path(originalDirectory);
+    std::filesystem::remove_all(detectionDirectory);
+    check(detectedConfig.dependenciesSearchingFile == "package.json",
+          "package manager detection keeps direct dependencies as the plugin source");
+
+    check(resolveCommand("dep") == CommandIntent::deploy, "explicit prefixes remain supported");
+    check(resolveCommand("deply") == CommandIntent::invalid, "typos cannot execute deployment");
+    check(suggestCommand("deply") == "deploy", "typos suggest the intended command");
+    check(resolveCommand("") == CommandIntent::invalid, "empty input is not a prefix");
+    check(getJaroWinklerSimilarity(std::string(80, 'a'), std::string(80, 'a')) == 1.0,
+          "similarity supports strings longer than a bitmask");
+    Config yamlConfig;
+    yamlConfig.loadFromYaml("additionalTools: []");
+    check(yamlConfig.additionalTools.empty(), "empty additional tools disables plugins");
+    bool rejected = false;
+    try {
+        yamlConfig.loadFromYaml("similarityThreshold: 0.9\nadditionalTools: wrong");
+    } catch (const std::exception &) {
+        rejected = true;
+    }
+    check(rejected && yamlConfig.similarityThreshold == 0.85, "invalid configuration is rejected atomically");
 
     double threshold = 0.0;
     int timeout = 0;
@@ -56,23 +107,10 @@ int main() {
 #if defined(_WIN32)
     check(joinShellArguments({"--config", "site config.yml"}) == " \"--config\" \"site config.yml\"",
           "Windows pass-through arguments are quoted");
-    traceOutputEnabled = false;
-    check(commandOutputRedirect() == " > NUL 2> NUL", "Windows normal mode hides child stdout and stderr");
-    check(commandForLog("git status > NUL 2> NUL") == "git status", "Windows log output hides quiet redirect");
-    traceOutputEnabled = true;
-    check(commandOutputRedirect() == " > NUL", "Windows trace mode keeps child stderr visible");
-    check(commandForLog("git status > NUL") == "git status > NUL", "Windows trace log shows raw redirect");
 #else
     check(joinShellArguments({"--config", "site config.yml", "a'b"}) == " '--config' 'site config.yml' 'a'\\''b'",
           "POSIX pass-through arguments are quoted");
-    traceOutputEnabled = false;
-    check(commandOutputRedirect() == " > /dev/null 2>&1", "POSIX normal mode hides child stdout and stderr");
-    check(commandForLog("git status > /dev/null 2>&1") == "git status", "POSIX log output hides quiet redirect");
-    traceOutputEnabled = true;
-    check(commandOutputRedirect() == " > /dev/null", "POSIX trace mode keeps child stderr visible");
-    check(commandForLog("git status > /dev/null") == "git status > /dev/null", "POSIX trace log shows raw redirect");
 #endif
-    traceOutputEnabled = false;
 
 #if defined(_WIN32)
     check(runCommand("exit /B 7") == 7, "Windows command exit code is propagated");
@@ -89,7 +127,7 @@ int main() {
           "command output is captured on failure");
     check(runCommand("printf 'successful output\\n'") == 0, "successful command output is captured silently");
     std::ifstream captured(logPath);
-    std::string capturedText((std::istreambuf_iterator<char>(captured)), std::istreambuf_iterator<char>());
+    std::string const capturedText((std::istreambuf_iterator<char>(captured)), std::istreambuf_iterator<char>());
     check(capturedText.find("stdout failure") != std::string::npos &&
               capturedText.find("stderr failure") != std::string::npos,
           "command log file keeps stdout and stderr");
@@ -129,4 +167,13 @@ int main() {
 
     if (failures != 0) std::cerr << failures << " test(s) failed\n";
     return failures == 0 ? 0 : 1;
+}
+
+int main() {
+    try {
+        return runTests();
+    } catch (const std::exception &exception) {
+        std::cerr << "Unexpected test exception: " << exception.what() << '\n';
+        return 1;
+    }
 }

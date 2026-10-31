@@ -1,178 +1,99 @@
 # Hexo Tool CLI
 
-一个用于 [Hexo](https://hexo.io) 博客项目的命令行工具，提供构建、预览、清理、依赖更新和主题更新等命令。命令支持前缀匹配和相似度匹配。
+用于 Hexo 博客项目的构建、预览、部署、依赖更新和主题更新工具。
 
-> [!NOTE]
-> 这是作者的一个小练手项目，可能存在一些 Bug，请谨慎用于生产环境。
-
-## 功能特性
-
-| 功能             | 说明                                                                           |
-| ---------------- | ------------------------------------------------------------------------------ |
-| **部署流程**     | `deploy` 依次执行 `clean → generate → 插件 → deploy → clean`，任一步失败即停止 |
-| **本地预览**     | 从 4000 到 4100 查找可用端口，然后启动 `hexo server`                         |
-| **依赖更新**     | 自动识别 npm / yarn / pnpm，执行对应的升级命令                                 |
-| **主题更新**     | 通过 `git submodule update --remote --merge` 拉取最新主题                      |
-| **命令匹配**     | 基于 Jaro-Winkler 算法，支持 `bui`、`dep` 等前缀或相似输入                   |
-| **插件扩展**     | 按需执行 `hexo-swpp`、`hexo-algolia` 等附属工具                                |
-
-## 命令参考
-
-```
-./HexoTool <command>
-```
-
-| 命令       | 别名示例           | 说明                           |
-| ---------- | ------------------ | ------------------------------ |
-| `deploy`   | `d`、`dep`         | 生成并部署静态文件             |
-| `build`    | `b`、`bui`         | 仅生成本地静态文件，不执行部署 |
-| `clean`    | `c`、`cle`         | 清理 Hexo 缓存和生成文件       |
-| `server`   | `s`、`ser`、`srv`  | 启动本地预览服务器             |
-| `packages` | `p`、`pkg`、`pack` | 更新 Node.js 依赖包            |
-| `theme`    | `t`、`the`         | 通过 Git 子模块更新主题        |
-| `help`     | `h`                | 显示帮助信息                   |
-
-> [!TIP]
-> 命令输入是目标命令的**前缀**，或与目标命令的相似度达到阈值（默认 `0.85`）时，程序会接受该输入。
-
-### 通用选项
-
-指定 Hexo 项目目录：
+## 使用
 
 ```bash
-./HexoTool deploy --project /path/to/blog
+./HexoTool <命令> [选项] [-- Hexo 参数]
 ```
 
-只预览执行计划，不运行任何外部命令：
+| 命令 | 缩写 | 行为 |
+| --- | --- | --- |
+| `build` | `b`、`bui` | clean → generate → 附属工具 |
+| `deploy` | `d`、`dep` | clean → generate → 附属工具 → deploy → clean |
+| `clean` | `c` | 清理缓存和生成文件 |
+| `server` | `s`、`srv` | 启动预览，实时显示 Hexo 输出 |
+| `packages` | `p`、`pkg` | 升级依赖及其版本声明，可能包含主版本升级 |
+| `theme` | `t` | git submodule update --remote --merge |
+| `help` | `h` | 帮助 |
+
+命令接受唯一前缀；拼写错误只提示候选，不会自动执行。任一步失败即停止并返回失败码。部署失败时保留生成文件供排查。
 
 ```bash
-./HexoTool deploy --dry-run
-```
-
-使用 `--` 将后续参数传给 Hexo。构建与部署流程会将这些参数传给 `clean`、`generate` 和 `deploy`：
-
-```bash
+./HexoTool build --project ~/blog
+./HexoTool deploy --dry-run --project ~/blog
 ./HexoTool deploy -- --config staging.yml
-./HexoTool server -- --draft --host 0.0.0.0
+./HexoTool server -- --port 5000 --host 0.0.0.0 --draft
+./HexoTool build --help
 ```
 
-在 Windows 上，透传参数不能包含 `cmd.exe` 会二次解释的字符：`"`、`%`、`&`、`|`、`<`、`>`、`(`、`)`、`^`、`!`。这可避免参数被当作额外命令执行。
+未指定 server 端口时，从 4000–4100 中选择可绑定的 IPv4 端口；指定 `--port` / `-p` 时直接交给 Hexo。实际启动状态和地址由 Hexo 输出，不会根据其他进程的监听状态宣布启动成功。server 不再自动清理生成文件；需要时可先执行 clean。Ctrl+C 停止预览并正常退出。
 
-其他通用选项包括 `--quiet`、`--no-color`、`--log-file <路径>` 和 `--version`。`--log-file` 会追加保存构建、部署、清理、主题更新和依赖更新命令的 stdout/stderr；持续运行的 `server` 进程暂不写入该文件。命令失败时，终端显示退出码和输出尾部；如果输出包含常见错误关键词，还会附带一条可能原因提示。`-v` / `--verbose` 显示项目路径、配置和实际执行的命令；`-vv` / `--trace` 还会显示命令匹配、文件探测和计时信息。默认模式会隐藏外部命令的正常输出。帮助与版本信息输出到 stdout，运行状态和错误输出到 stderr。执行项目命令前，工具会检查目标目录中是否同时存在 `_config.yml` 与 `package.json`。
+构建与部署会把 `--` 后的参数传给 clean、generate 和 deploy；附属工具使用自身配置的命令。Windows 透传参数不能包含 cmd.exe 会再次解释的字符：`"`、`%`、`&`、`|`、`<`、`>`、`(`、`)`、`^`、`!` 或换行。
 
-## 编译
+## 选项与日志
 
-### 基础依赖
+| 选项 | 说明 |
+| --- | --- |
+| `--project <路径>` | Hexo 项目目录，要求存在 _config.yml 和 package.json |
+| `--dry-run` | 仅显示执行计划，不运行命令、不创建日志 |
+| `--quiet` | 只显示警告、错误及失败输出尾部 |
+| `--no-color` | 禁用工具自身的彩色输出 |
+| `--log-file <路径>` | 追加保存所有命令的 stdout/stderr，包括 server |
+| `-v` / `--verbose` | 显示项目、执行命令和子进程实时输出 |
+| `-vv` / `--trace` | 额外显示内部诊断 |
+| `--version` | 版本 |
+| `-h` / `--help` | 帮助，可放在命令前或后 |
 
-您至少需要安装完整的 C++ 编译工具链、CMake 构建系统以及 Git。本项目需要包含完整 `std::format` 支持的 **C++20** 工具链（建议 GCC 13+、Clang 17+ 或最新 MSVC 2022）。
+相对日志路径以启动工具时的目录为准，不随 --project 改变。日志无法打开时不会执行外部命令；运行中写日志失败会报告错误。正常模式隐藏构建的成功输出，失败显示最多约 8 KB 的尾部；server、packages 和 theme 默认实时显示输出。帮助与版本写入 stdout，状态、子进程输出和错误写入 stderr。
 
-- **Arch Linux**:
-  ```bash
-  sudo pacman -S base-devel cmake git
-  ```
-- **Ubuntu / Debian**:
-  ```bash
-  sudo apt update && sudo apt install build-essential cmake git
-  ```
+子进程继承输入和环境变量；工具不会强制设置 CI 模式。可以继续使用 `HEXO_TOOLKIT_DEBUG`、`HEXO_TOOLKIT_TRACE` 环境变量打开诊断。
 
-### 性能增强组件（可选）
+## 包管理器
 
-安装后，CMake 脚本将自动识别并启用它们：
+优先读取 package.json 的 `packageManager`，支持 npm、pnpm 和 Yarn；未声明时根据 package-lock.json / npm-shrinkwrap.json、pnpm-lock.yaml、yarn.lock 识别，无 lock 文件默认 npm。存在不同包管理器的 lock 文件且没有明确声明时，工具会报错。
 
-| 工具     | 作用                       |
-| -------- | -------------------------- |
-| `ninja`  | 更快的构建后端             |
-| `ccache` | 编译结果缓存，加速二次构建 |
-| `mold`   | 更快的链接器               |
+npm 执行 Hexo 时使用 `npx --no-install`，请先安装项目依赖。仅 packages 命令会显式调用 npm-check-updates 更新版本声明并安装。Yarn 1 使用 `yarn upgrade --latest`，新版 Yarn 使用 `yarn up "*" "@*/*"`；优先按声明版本区分，否则根据 yarn.lock 的 metadata 识别。
 
-- **Arch Linux**:
-  ```bash
-  sudo pacman -S ninja ccache mold
-  ```
-- **Ubuntu / Debian**:
-  ```bash
-  sudo apt install ninja-build ccache mold
-  ```
+## 配置
 
-### 构建
-
-进入项目根目录后，推荐使用 Ninja 生成器进行 Release 构建：
-
-```bash
-# 生成构建系统配置
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-
-# 多核并行编译
-cmake --build build -j
-```
-
-编译产物位于 `./build/HexoTool`。
-
-运行测试：
-
-```bash
-ctest --test-dir build --output-on-failure
-```
-
-<details>
-<summary><b>可选：启用 PGO 优化</b></summary>
-<br>
-
-PGO（Profile-Guided Optimization）使用运行数据进行编译器优化。是否有收益取决于实际工作负载。
-
-```bash
-# 第一步：编译插桩版本
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_PGO_GEN=ON
-cmake --build build -j
-
-# 第二步：运行程序以收集性能数据（用真实场景操作）
-./build/HexoTool build
-
-# 第三步：使用收集到的数据重新优化编译
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_PGO_GEN=OFF -DENABLE_PGO_USE=ON
-cmake --build build -j
-```
-
-</details>
-
-## 配置文件
-
-在**可执行文件同目录**下创建 `config.yaml`，可自定义工具行为。若文件不存在，程序将使用内置默认值。
+可在**可执行文件同目录**创建 config.yaml；不存在则使用默认值。配置格式或字段值错误时停止操作，不会静默改用默认配置继续部署。
 
 ```yaml
 similarityThreshold: 0.85
-serverStartupTimeoutSeconds: 30
 dependenciesSearchingFile: "package.json"
 additionalTools:
   - ["hexo-swpp", "hexo swpp"]
   - ["hexo-algolia", "hexo algolia"]
 ```
 
-### 参数说明
+- `similarityThreshold`：候选命令提示的最低相似度，范围 `(0, 1]`；不影响命令是否执行。
+- `dependenciesSearchingFile`：用于插件检测的 manifest，默认 package.json。自定义文件也须使用 dependencies / devDependencies / optionalDependencies / peerDependencies 字段；不再匹配 lock 文件里的文本。
+- `additionalTools`：构建后执行的 `[包名, 命令]` 列表，包名须在 manifest 中直接声明。命令通过选定的包管理器执行；空列表 `[]` 禁用全部附属工具。这里的命令属于可执行配置，仅填写可信命令。
 
-**`similarityThreshold`** _(Float, 默认 `0.85`)_
+旧的 `serverStartupTimeoutSeconds` 已停用，保留该字段会提示移除。服务器由 Hexo 自身报告状态，不再通过端口轮询判定启动超时。
 
-命令模糊匹配的相似度阈值，取值范围 `(0.0, 1.0]`。数值越高，匹配越严格。
+## 编译与测试
 
-**`dependenciesSearchingFile`** _(String, 默认自动检测)_
+需要 CMake 3.24+、Git 和支持完整 C++20 / std::format 的编译器。测试还需要 Python 3。CMake 获取固定版本的 spdlog 和 rapidyaml；可选 ccache 会自动用于编译缓存。
 
-用于检测附属插件是否已安装的文件（程序通过搜索该文件内容来判断插件是否存在）。默认情况下，程序会根据当前目录下的 lock 文件自动识别包管理器（npm / yarn / pnpm）并设置对应路径。手动指定此项后，自动检测将被禁用。
-
-**`serverStartupTimeoutSeconds`** _(Int, 默认 `30`)_
-
-`server` 启动阶段的最长等待时间。若超过该时间仍未监听到端口，程序会返回错误，避免一直卡在启动等待阶段。
-
-**`additionalTools`** _(List[List], 默认内置两个插件)_
-
-在 `build` / `deploy` 流程中，`hexo generate` 完成后额外执行的命令。格式为 `["npm 包名", "实际命令"]`，程序会先检查 `dependenciesSearchingFile` 中是否包含该包名，存在才执行。设置为空列表可禁用所有插件：
-
-```yaml
-additionalTools: []
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel 2
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-> [!WARNING]
-> `additionalTools` 中的命令将以当前用户权限通过子进程直接执行，请勿填入不受信任的内容。任一附属工具执行失败都会中止部署。
+产物为 build/HexoTool；Windows 多配置生成器通常位于 build/Release/HexoTool.exe。不运行测试时可加 `-DBUILD_TESTING=OFF`，无需 Python。Debug、Release 和 MinSizeRel 的优化级别由 CMake 管理；不再提供 PGO、native arch、强制 linker、Unity Build、PCH 或自动 LTO 配置。
+
+项目自身的可执行文件与测试启用编译器警告，包括 GCC/Clang 的转换、符号和遮蔽检查。安装 clang-tidy 后可使用仓库内的检查配置：
+
+```bash
+clang-tidy -p build main.cpp tests/core_tests.cpp
+```
+
+测试使用本地模拟命令验证流程，不会安装 Node 依赖或执行真实部署。
 
 ## License
 
-本项目以 [SSPLv1](LICENSE) 协议开源。
+[SSPLv1](LICENSE)
