@@ -52,7 +52,7 @@ static int runTests() {
           "package.json script names are not treated as dependencies");
     check(!isDependenciesPresent(R"({"dependencies":{"hexo-swpp-extra":"1.0.0"}})", "hexo-swpp"),
           "dependency names are matched exactly");
-    check(!isDependenciesPresent("  /hexo-swpp@1.0.0:", "hexo-swpp", "pnpm-lock.yaml"),
+    check(!isDependenciesPresent("  /hexo-swpp@1.0.0:", "hexo-swpp"),
           "lock entries do not count as direct dependencies");
 
     check(!hasUnsafeShellArguments({"--config", "site config.yml"}), "ordinary pass-through arguments are accepted");

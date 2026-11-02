@@ -29,30 +29,23 @@ inline std::string readFileContents(const std::filesystem::path &path) {
     return content;
 }
 
-// 函数用途：检查缓存的文件内容中是否存在特定依赖项
-// 参数：
-//   fileContent: 文件的完整内容字符串
-//   dependencies: 要查找的依赖项
-// 返回值：若依赖声明中存在指定的包名则返回 true，否则返回 false
-inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependencies,
-                                  const std::filesystem::path &dependencyFile = "package.json") {
-    if (fileContent.empty()) return false;
-
-    // Parse direct dependency fields only. Custom paths use the same manifest schema.
-    static_cast<void>(dependencyFile);
-    try {
-        ryml::Tree tree = ryml::parse_in_arena(ryml::csubstr(fileContent.data(), fileContent.size()));
-        ryml::NodeRef root = tree.rootref();
-        if (!root.is_map()) return false;
-        const std::string dependencyName(dependencies);
-        for (const char *sectionName :
-             {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}) {
-            if (root.has_child(sectionName) && root[sectionName].is_map() &&
-                root[sectionName].has_child(ryml::to_csubstr(dependencyName))) {
-                return true;
-            }
+// Reuse the parsed manifest when checking several tools. Custom paths use the same schema.
+inline bool isDependenciesPresent(ryml::ConstNodeRef root, std::string_view dependency) {
+    if (!root.is_map()) return false;
+    for (const char *sectionName : {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}) {
+        if (root.has_child(sectionName) && root[sectionName].is_map() &&
+            root[sectionName].has_child(ryml::csubstr(dependency.data(), dependency.size()))) {
+            return true;
         }
-        return false;
+    }
+    return false;
+}
+
+inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependency) {
+    if (fileContent.empty()) return false;
+    try {
+        const auto tree = ryml::parse_in_arena(ryml::csubstr(fileContent.data(), fileContent.size()));
+        return isDependenciesPresent(tree.rootref(), dependency);
     } catch (const std::exception &) {
         return false;
     }

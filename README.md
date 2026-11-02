@@ -18,7 +18,7 @@
 | `theme` | `t` | git submodule update --remote --merge |
 | `help` | `h` | 帮助 |
 
-命令接受唯一前缀；拼写错误只提示候选，不会自动执行。任一步失败即停止并返回失败码。部署失败时保留生成文件供排查。
+命令接受唯一前缀；拼写错误只提示候选，不会自动执行。任一步失败即停止并返回失败码。部署前使用项目自身的 Hexo 加载配置并检查所有部署类型及实际注册的插件；未配置部署器、插件缺失或部署失败时返回失败码，保留生成文件供排查。多个部署器须全部通过检查才开始部署。
 
 ```bash
 ./HexoTool build --project ~/blog
@@ -28,9 +28,9 @@
 ./HexoTool build --help
 ```
 
-未指定 server 端口时，从 4000–4100 中选择可绑定的 IPv4 端口；指定 `--port` / `-p` 时直接交给 Hexo。实际启动状态和地址由 Hexo 输出，不会根据其他进程的监听状态宣布启动成功。server 不再自动清理生成文件；需要时可先执行 clean。Ctrl+C 停止预览并正常退出。
+未指定 server 端口时，从 4000–4100 中选择可绑定的 IPv4 端口；指定 `--port` / `-p` 时直接交给 Hexo。实际启动状态和地址由 Hexo 输出，不会根据其他进程的监听状态宣布启动成功。server 不再自动清理生成文件；需要时可先执行 clean。Ctrl+C 停止预览并正常退出。POSIX 交互终端支持 Ctrl+Z 暂停，以及 shell 的 `fg` / `bg` 恢复。
 
-构建与部署会把 `--` 后的参数传给 clean、generate 和 deploy；附属工具使用自身配置的命令。Windows 透传参数不能包含 cmd.exe 会再次解释的字符：`"`、`%`、`&`、`|`、`<`、`>`、`(`、`)`、`^`、`!` 或换行。
+构建与部署会把 `--` 后的参数传给 clean、generate 和 deploy。以 `hexo` 开头的附属命令同时继承 `--config`、`--cwd`、`--safe`，包括 `--config=文件` 和逗号分隔的多配置文件；其他附属命令保留自身参数。Windows 透传参数不能包含 cmd.exe 会再次解释的字符：`"`、`%`、`&`、`|`、`<`、`>`、`(`、`)`、`^`、`!` 或换行。
 
 ## 选项与日志
 
@@ -38,7 +38,7 @@
 | --- | --- |
 | `--project <路径>` | Hexo 项目目录，要求存在 _config.yml 和 package.json |
 | `--dry-run` | 仅显示执行计划，不运行命令、不创建日志 |
-| `--quiet` | 只显示警告、错误及失败输出尾部 |
+| `--quiet` | 隐藏工具状态信息；非交互运行只显示警告、错误及失败输出尾部 |
 | `--no-color` | 禁用工具自身的彩色输出 |
 | `--log-file <路径>` | 追加保存所有命令的 stdout/stderr，包括 server |
 | `-v` / `--verbose` | 显示项目、执行命令和子进程实时输出 |
@@ -46,7 +46,7 @@
 | `--version` | 版本 |
 | `-h` / `--help` | 帮助，可放在命令前或后 |
 
-相对日志路径以启动工具时的目录为准，不随 --project 改变。日志无法打开时不会执行外部命令；运行中写日志失败会报告错误。正常模式隐藏构建的成功输出，失败显示最多约 8 KB 的尾部；server、packages 和 theme 默认实时显示输出。帮助与版本写入 stdout，状态、子进程输出和错误写入 stderr。
+相对日志路径以启动工具时的目录为准，不随 --project 改变。日志无法打开时不会执行外部命令；运行中写日志失败会报告错误。stdin 连接终端时始终实时显示子进程输出，包括 `--quiet`，以便看到输入提示。非交互运行默认隐藏构建的成功输出，失败显示最多约 8 KB 的尾部；deploy、server、packages 和 theme 默认实时显示输出。帮助与版本写入 stdout，状态、子进程输出和错误写入 stderr。
 
 子进程继承输入和环境变量；工具不会强制设置 CI 模式。可以继续使用 `HEXO_TOOLKIT_DEBUG`、`HEXO_TOOLKIT_TRACE` 环境变量打开诊断。
 
@@ -92,7 +92,16 @@ ctest --test-dir build -C Release --output-on-failure
 clang-tidy -p build main.cpp tests/core_tests.cpp
 ```
 
-测试使用本地模拟命令验证流程，不会安装 Node 依赖或执行真实部署。
+默认测试使用本地模拟命令验证流程，不会安装 Node 依赖或执行真实部署。还可以启用真实 Hexo 集成测试：
+
+```bash
+npm ci --ignore-scripts --no-audit --no-fund --prefix tests/fixtures/real-hexo
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHEXO_INTEGRATION_TESTS=ON
+cmake --build build --config Release --parallel 2
+ctest --test-dir build -C Release --output-on-failure
+```
+
+集成测试使用固定版本 Hexo 及临时项目，部署器仅写本地测试文件；覆盖缺失或无效部署配置、多个部署器、部署异常和多配置传递。CI 在 Linux 和 Windows 上启用这些测试。
 
 ## License
 

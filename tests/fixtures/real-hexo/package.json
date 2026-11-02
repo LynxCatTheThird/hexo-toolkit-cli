@@ -1,0 +1,9 @@
+{
+  "name": "hexo-toolkit-integration-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "hexo": "7.3.0",
+    "hexo-cli": "4.3.2"
+  }
+}
