@@ -7,6 +7,8 @@ import sys
 import tempfile
 import time
 import signal
+import shlex
+import shutil
 import unittest
 
 
@@ -16,6 +18,9 @@ def mock_command():
         calls.write(json.dumps(args) + '\n')
     if 'server' in args:
         print('server listening on configured address', flush=True)
+    if os.environ.get('HEXO_TEST_PROMPT') and 'swpp' in args:
+        answer = input('CONFIRM_PLUGIN [y/N]: ')
+        print('answer=' + answer, flush=True)
     if os.environ.get('HEXO_TEST_LARGE'):
         sys.stdout.write('x' * 2_000_000 + '\nEND_OF_OUTPUT\n')
     else:
@@ -26,7 +31,8 @@ def mock_command():
     if os.environ.get('HEXO_TEST_STDIN'):
         print('stdin=' + sys.stdin.read(), flush=True)
         print('CI=' + os.environ.get('CI', '<unset>'), flush=True)
-    if os.environ.get('HEXO_TEST_FAIL') in args:
+    if (os.environ.get('HEXO_TEST_FAIL') in args or
+            (os.environ.get('HEXO_TEST_FAIL') == 'deploy' and '--eval' in args)):
         return 7
     return 0
 
@@ -52,7 +58,7 @@ class Workflows(unittest.TestCase):
                         HEXO_TEST_CALLS=str(self.calls))
         for key in ('HEXO_TOOLKIT_DEBUG', 'HEXO_TOOLKIT_TRACE'):
             self.env.pop(key, None)
-        for manager in ('npx', 'npm', 'pnpm', 'yarn', 'git'):
+        for manager in ('npx', 'npm', 'pnpm', 'yarn', 'git', 'node', 'formatter'):
             if os.name == 'nt':
                 wrapper = self.root / (manager + '.cmd')
                 wrapper.write_text(f'@"{sys.executable}" "{Path(__file__).resolve()}" --mock {manager} %*\r\n')
@@ -79,7 +85,26 @@ class Workflows(unittest.TestCase):
 
     def test_deploy_order(self):
         self.run_cli('deploy')
-        self.assertEqual([args[2] for args in self.commands()], ['clean', 'generate', 'swpp', 'deploy', 'clean'])
+        calls = self.commands()
+        self.assertEqual([args[2] for args in calls[:3]], ['clean', 'generate', 'swpp'])
+        self.assertEqual(calls[3][0], '--eval')
+        self.assertEqual(calls[4][2], 'clean')
+        self.assertEqual(len(calls), 5)
+
+    def test_deployment_failure_skips_final_cleanup(self):
+        self.env['HEXO_TEST_FAIL'] = 'deploy'
+        self.run_cli('deploy', code=7)
+        self.assertEqual(len(self.commands()), 4)
+        self.assertEqual(self.commands()[-1][0], '--eval')
+
+    def test_checked_deploy_uses_package_manager_node_environment(self):
+        for manager, prefix in [('pnpm', ['exec', 'node']), ('yarn', ['node'])]:
+            with self.subTest(manager=manager):
+                self.manifest['packageManager'] = manager + '@4.0.0'
+                self.save_manifest()
+                self.calls.unlink(missing_ok=True)
+                self.run_cli('deploy')
+                self.assertEqual(self.commands()[3][:len(prefix) + 1], prefix + ['--eval'])
 
     def test_generation_failure_stops_deploy(self):
         self.env['HEXO_TEST_FAIL'] = 'generate'
@@ -171,6 +196,41 @@ class Workflows(unittest.TestCase):
         self.run_cli('clean', '--', '--config', 'site config.yml', "a'b")
         self.assertEqual(self.commands()[0][-3:], ['--config', 'site config.yml', "a'b"])
 
+    def test_hexo_plugins_share_configuration_without_generation_flags(self):
+        for shared in [('--config', 'site config.yml'), ('--config=site config.yml',),
+                       ('--config', 'base.yml,staging.yml'), ('--cwd', 'other blog', '--safe')]:
+            with self.subTest(shared=shared):
+                self.calls.unlink(missing_ok=True)
+                self.run_cli('build', '--', *shared, '--bail')
+                self.assertEqual(self.commands()[-1], ['--no-install', 'hexo', *shared, 'swpp'])
+                self.assertIn('--bail', self.commands()[1])
+
+    def test_non_hexo_tools_do_not_receive_hexo_options(self):
+        executable = self.root / BINARY.name
+        shutil.copy2(BINARY, executable)
+        (self.root / 'config.yaml').write_text('additionalTools:\n  - [hexo-swpp, "formatter --check"]\n')
+        result = subprocess.run([str(executable), 'build', '--project', str(self.project),
+                                 '--', '--config', 'site config.yml'], env=self.env,
+                                capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands()[-1], ['--no-install', 'formatter', '--check'])
+
+    def test_shared_config_stays_on_hexo_in_compound_tool(self):
+        executable = self.root / BINARY.name
+        shutil.copy2(BINARY, executable)
+        (self.root / 'config.yaml').write_text(
+            'additionalTools:\n  - [hexo-swpp, "hexo swpp && formatter --check"]\n')
+        result = subprocess.run([str(executable), 'build', '--project', str(self.project),
+                                 '--', '--config', 'site config.yml'], env=self.env,
+                                capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands()[-2], ['--no-install', 'hexo', '--config', 'site config.yml', 'swpp'])
+        self.assertEqual(self.commands()[-1], ['--check'])
+
+    def test_missing_shared_option_value_prevents_cleanup(self):
+        self.run_cli('build', '--', '--config', code=1)
+        self.assertFalse(self.calls.exists())
+
     def test_stdin_and_environment_preserved(self):
         self.env['HEXO_TEST_STDIN'] = '1'
         self.env['CI'] = 'user-value'
@@ -216,9 +276,9 @@ class Workflows(unittest.TestCase):
                     try:
                         chunk = os.read(descriptor, 16384)
                     except OSError:
-                        break
+                        chunk = b''
                     if not chunk:
-                        break
+                        time.sleep(.01)
                     output += chunk
                     if b'child stdout' in output and not sent_input:
                         os.write(descriptor, b'hello\n\x04')
@@ -239,6 +299,106 @@ class Workflows(unittest.TestCase):
             if not exited:
                 os.kill(pid, signal.SIGTERM)
                 os.waitpid(pid, 0)
+            os.close(descriptor)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX pseudo-terminal')
+    def test_build_plugin_prompt_is_visible(self):
+        import pty
+        import select
+        self.env['HEXO_TEST_PROMPT'] = '1'
+        for options in [[], ['--quiet']]:
+            with self.subTest(options=options):
+                pid, descriptor = pty.fork()
+                if pid == 0:
+                    os.execve(str(BINARY), [str(BINARY), 'build', *options,
+                                           '--project', str(self.project)], self.env)
+                output = b''
+                answered = False
+                exited = False
+                try:
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if select.select([descriptor], [], [], .1)[0]:
+                            try:
+                                output += os.read(descriptor, 16384)
+                            except OSError:
+                                # PTY EOF can arrive just before waitpid reports the child's exit.
+                                time.sleep(.01)
+                        if b'CONFIRM_PLUGIN' in output and not answered:
+                            os.write(descriptor, b'y\n')
+                            answered = True
+                        result, status = os.waitpid(pid, os.WNOHANG)
+                        if result:
+                            exited = True
+                            self.assertEqual(os.waitstatus_to_exitcode(status), 0, output)
+                            break
+                    if not exited:
+                        result, status = os.waitpid(pid, os.WNOHANG)
+                        exited = result != 0
+                        if exited:
+                            self.assertEqual(os.waitstatus_to_exitcode(status), 0, output)
+                    self.assertTrue(answered and exited, output)
+                finally:
+                    if not exited:
+                        os.kill(pid, signal.SIGTERM)
+                        os.waitpid(pid, 0)
+                    os.close(descriptor)
+
+    @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'requires a job-control shell')
+    def test_server_ctrl_z_fg_and_bg(self):
+        import pty
+        import select
+        self.env.update(HEXO_TEST_WAIT='1', PS1='HEXO_TEST_SHELL> ', TERM='dumb')
+        pid, descriptor = pty.fork()
+        if pid == 0:
+            os.execve(shutil.which('bash'), ['bash', '--noprofile', '--norc', '-i'], self.env)
+        output = b''
+        child_group = None
+        wrapper_group = None
+
+        def read_until(marker):
+            nonlocal output
+            deadline = time.monotonic() + 10
+            while marker not in output and time.monotonic() < deadline:
+                if select.select([descriptor], [], [], .1)[0]:
+                    output += os.read(descriptor, 16384)
+            self.assertIn(marker, output)
+            output = b''
+
+        try:
+            read_until(b'HEXO_TEST_SHELL> ')
+            wrapper_pid_file = self.root / 'wrapper.pid'
+            command = ('printf "%s" "$$" > ' + shlex.quote(str(wrapper_pid_file)) + '; exec ' +
+                       shlex.join([str(BINARY), 'server', '--project', str(self.project)]))
+            os.write(descriptor, (shlex.join(['/bin/sh', '-c', command]) + '\n').encode())
+            read_until(b'server listening on configured address')
+            wrapper_group = int(wrapper_pid_file.read_text())
+            child_group = os.tcgetpgrp(descriptor)
+            os.write(descriptor, b'\x1a')
+            read_until(b'HEXO_TEST_SHELL> ')
+            self.assertEqual(os.tcgetpgrp(descriptor), pid)
+            os.write(descriptor, b'bg\n')
+            read_until(b'HEXO_TEST_SHELL> ')
+            self.assertEqual(os.tcgetpgrp(descriptor), pid, 'bg stole the shell terminal')
+            os.write(descriptor, b'fg\n')
+            deadline = time.monotonic() + 5
+            while os.tcgetpgrp(descriptor) != child_group and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertEqual(os.tcgetpgrp(descriptor), child_group)
+            os.write(descriptor, b'\x03')
+            read_until(b'HEXO_TEST_SHELL> ')
+            os.write(descriptor, b'printf "EXIT=%s\\n" "$?"\n')
+            read_until(b'EXIT=0\r\n')
+        finally:
+            for group in (wrapper_group, child_group):
+                if group and group != pid:
+                    try:
+                        os.killpg(group, signal.SIGCONT)
+                        os.killpg(group, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
             os.close(descriptor)
 
     @unittest.skipIf(os.name == 'nt', 'POSIX file descriptors')

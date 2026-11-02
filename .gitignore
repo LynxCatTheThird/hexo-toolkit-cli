@@ -1,4 +1,4 @@
-# 忽略编译器生成的文件和IDE配置文件
+# 编译器生成的文件和IDE配置文件
 .vscode/
 .idea/
 .vscode*
@@ -30,3 +30,8 @@ out.*
 *.in
 i.*
 in.*
+
+# 内部审查报告、临时复现脚本和工具产物
+/.review/
+/.codex-review/
+node_modules/

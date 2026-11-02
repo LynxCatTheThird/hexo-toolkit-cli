@@ -203,10 +203,10 @@ int run(int argc, char *argv[]) {
     int exitCode = 0;
     switch (command) {
         case CommandIntent::build:
-            exitCode = hexoBuild(config, extraArguments);
+            exitCode = hexoBuild(config, passThroughArguments);
             break;
         case CommandIntent::deploy:
-            exitCode = hexoDeploy(config, extraArguments);
+            exitCode = hexoDeploy(config, passThroughArguments);
             break;
         case CommandIntent::clean:
             exitCode = hexoClean(config, extraArguments);

@@ -15,8 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Hexo test runtime
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix tests/fixtures/real-hexo
+
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEXO_INTEGRATION_TESTS=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel 2

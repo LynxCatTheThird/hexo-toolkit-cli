@@ -58,7 +58,7 @@ inline volatile sig_atomic_t foregroundChildProcessGroupId = -1;
 inline volatile sig_atomic_t foregroundTerminalSignal = 0;
 
 inline void forwardTerminalSignalToChildProcessGroup(int signalNumber) {
-    foregroundTerminalSignal = signalNumber;
+    if (signalNumber != SIGTSTP) foregroundTerminalSignal = signalNumber;
     const sig_atomic_t processGroupId = foregroundChildProcessGroupId;
     if (processGroupId > 0) kill(-static_cast<pid_t>(processGroupId), signalNumber);
 }
@@ -66,6 +66,15 @@ inline void forwardTerminalSignalToChildProcessGroup(int signalNumber) {
 
 inline bool dryRunEnabled = false;
 inline std::filesystem::path commandLogFile;
+
+inline bool hasTerminalInput() {
+#if defined(_WIN32)
+    DWORD mode = 0;
+    return GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode) != FALSE;
+#else
+    return isatty(STDIN_FILENO) != 0;
+#endif
+}
 
 inline std::string quoteShellArgument(std::string_view argument) {
 #if defined(_WIN32)
@@ -158,6 +167,7 @@ class ManagedProcess {
     struct sigaction oldSigInt{};
     struct sigaction oldSigQuit{};
     struct sigaction oldSigTerm{};
+    struct sigaction oldSigTstp{};
     bool signalsSaved = false;
 #endif
     bool finished = false;
@@ -211,6 +221,7 @@ class ManagedProcess {
         std::swap(oldSigInt, other.oldSigInt);
         std::swap(oldSigQuit, other.oldSigQuit);
         std::swap(oldSigTerm, other.oldSigTerm);
+        std::swap(oldSigTstp, other.oldSigTstp);
         std::swap(signalsSaved, other.signalsSaved);
 #endif
         std::swap(finished, other.finished);
@@ -242,13 +253,14 @@ class ManagedProcess {
         }
 #else
         if (terminalOwner > 0) {
-            setTerminalForeground(terminalOwner);
+            if (tcgetpgrp(STDIN_FILENO) == processGroupId) setTerminalForeground(terminalOwner);
             terminalOwner = -1;
         }
         if (signalsSaved) {
             sigaction(SIGINT, &oldSigInt, nullptr);
             sigaction(SIGQUIT, &oldSigQuit, nullptr);
             sigaction(SIGTERM, &oldSigTerm, nullptr);
+            sigaction(SIGTSTP, &oldSigTstp, nullptr);
             if (foregroundChildProcessGroupId == processGroupId) {
                 foregroundChildProcessGroupId = -1;
                 foregroundTerminalSignal = 0;
@@ -316,7 +328,7 @@ class ManagedProcess {
             startupInfo.hStdError = outputWrite;
             startupInfo.hStdInput = inputCopy;
         }
-        std::string mutableCommand = std::format("cmd.exe /D /S /C \"{}\"", command);
+        std::string mutableCommand = std::format("cmd.exe /D /V:OFF /S /C \"{}\"", command);
         PROCESS_INFORMATION processInformation{};
         const BOOL created = CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, captureOutput,
                                             CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
@@ -358,6 +370,7 @@ class ManagedProcess {
         sigaddset(&terminalSignals, SIGINT);
         sigaddset(&terminalSignals, SIGQUIT);
         sigaddset(&terminalSignals, SIGTERM);
+        sigaddset(&terminalSignals, SIGTSTP);
         // 阻塞安装窗口内的终端信号，避免 Ctrl+C 落在 fork() 与转发处理器安装之间。
         sigprocmask(SIG_BLOCK, &terminalSignals, &oldSignalMask);
         const bool ownsTerminal = isatty(STDIN_FILENO) && tcgetpgrp(STDIN_FILENO) == getpgrp();
@@ -401,15 +414,17 @@ class ManagedProcess {
         sigaction(SIGINT, &forwardAction, &process.oldSigInt);
         sigaction(SIGQUIT, &forwardAction, &process.oldSigQuit);
         sigaction(SIGTERM, &forwardAction, &process.oldSigTerm);
+        sigaction(SIGTSTP, &forwardAction, &process.oldSigTstp);
         process.signalsSaved = true;
         sigprocmask(SIG_SETMASK, &oldSignalMask, nullptr);
 #endif
         return process;
     }
 
-    std::optional<int> pollExitCode() {
+    std::optional<int> pollExitCode(bool suspendWithChild = true) {
         if (finished) return exitCode;
 #if defined(_WIN32)
+        static_cast<void>(suspendWithChild);
         // 非阻塞检查一次进程状态，避免把等待逻辑锁死在系统调用里。
         DWORD status = WaitForSingleObject(processHandle, 0);
         if (status == WAIT_TIMEOUT) return std::nullopt;
@@ -431,9 +446,11 @@ class ManagedProcess {
         restoreSignals();
         return exitCode;
 #else
+        // fg can also foreground a job that is already running after bg.
+        if (terminalOwner > 0 && tcgetpgrp(STDIN_FILENO) == terminalOwner) setTerminalForeground(processGroupId);
         // WNOHANG 用于轮询子进程，而不是一直阻塞主线程。
         int status = 0;
-        pid_t const result = waitpid(pid, &status, WNOHANG);
+        pid_t const result = waitpid(pid, &status, WNOHANG | WUNTRACED);
         if (result == 0) return std::nullopt;
         if (result < 0) {
             if (errno == EINTR) return std::nullopt;
@@ -443,6 +460,20 @@ class ManagedProcess {
             captureTerminalSignal();
             restoreSignals();
             return exitCode;
+        }
+        if (WIFSTOPPED(status)) {
+            if (suspendWithChild && foregroundTerminalSignal != SIGTERM) {
+                // The shell waits for this wrapper, so it must stop along with the foreground child.
+                kill(-processGroupId, SIGSTOP);
+                if (terminalOwner > 0 && tcgetpgrp(STDIN_FILENO) == processGroupId)
+                    setTerminalForeground(terminalOwner);
+                raise(SIGSTOP);
+                // fg gives the terminal back to us; bg must not steal it from the shell.
+                if (terminalOwner > 0 && tcgetpgrp(STDIN_FILENO) == terminalOwner)
+                    setTerminalForeground(processGroupId);
+            }
+            kill(-processGroupId, SIGCONT);
+            return std::nullopt;
         }
         finished = true;
         exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
@@ -481,8 +512,9 @@ class ManagedProcess {
         if (processGroupId <= 0) return true;
         const pid_t groupId = processGroupId;
         kill(-groupId, SIGTERM);
+        kill(-groupId, SIGCONT);
         for (int i = 0; i < 50; ++i) {
-            if (!finished) pollExitCode();
+            if (!finished) pollExitCode(false);
             if (kill(-groupId, 0) < 0 && errno == ESRCH) {
                 processGroupId = -1;
                 return true;
@@ -511,9 +543,11 @@ class ManagedProcess {
 };
 
 // Commands share one bounded output path: stream to the requested log and keep only an error tail.
-inline int runCommand(const std::string &command, bool liveOutput = false, bool interruptIsSuccess = false) {
+inline int runCommand(const std::string &command, bool liveOutput = false, bool interruptIsSuccess = false,
+                      std::string_view displayCommand = {}) {
+    if (displayCommand.empty()) displayCommand = command;
     if (dryRunEnabled) {
-        spdlog::info("  $ {}", command);
+        spdlog::info("  $ {}", displayCommand);
         return 0;
     }
     std::ofstream log;
@@ -523,21 +557,21 @@ inline int runCommand(const std::string &command, bool liveOutput = false, bool 
             logError("无法写入日志文件：{}", commandLogFile.string());
             return 1;
         }
-        log << "\n===== " << command << " =====\n";
+        log << "\n===== " << displayCommand << " =====\n";
         log.flush();
         if (!log) {
             logError("无法写入日志文件：{}", commandLogFile.string());
             return 1;
         }
     }
-    logDetail("$ {}", command);
+    logDetail("$ {}", displayCommand);
     auto process = ManagedProcess::start(command, true);
     if (!process) {
-        logError("无法启动命令：{}", command);
+        logError("无法启动命令：{}", displayCommand);
         return 1;
     }
-    const bool showOutput =
-        (liveOutput && spdlog::should_log(spdlog::level::info)) || spdlog::should_log(spdlog::level::debug);
+    const bool showOutput = hasTerminalInput() || (liveOutput && spdlog::should_log(spdlog::level::info)) ||
+                            spdlog::should_log(spdlog::level::debug);
     std::string tail;
     bool logFailed = false;
     auto const consume = [&](const std::string &chunk) {
