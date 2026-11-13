@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -103,17 +104,23 @@ if (hexo.env.cmd === 'deploy') for (const type of ['local-test', 'second-test'])
                 self.assertFalse((self.project / 'public-default').exists())
 
     def test_missing_deployer_preserves_diagnostics_and_cleans_on_zero_exit(self):
-        for setting, expected in [('deploy:\n  type: missing-plugin\n', []),
-                                  ('deploy:\n  - type: local-test\n  - type: missing-plugin\n', ['local-test'])]:
-            with self.subTest(setting=setting):
-                self.write_config(setting)
-                (self.project / 'calls.jsonl').unlink(missing_ok=True)
-                # Native Hexo logs the error, returns zero and may have run preceding deployers.
-                result = self.run_cli('deploy')
-                self.assertIn('Deployer not found: missing-plugin', result.stderr)
-                self.assertEqual([entry['args']['type'] for entry in self.calls() if entry['phase'] == 'deploy'],
-                                 expected)
-                self.assertFalse((self.project / 'public-default').exists())
+        for color_mode in ('NO_COLOR', 'FORCE_COLOR'):
+            self.env.pop('NO_COLOR', None)
+            self.env.pop('FORCE_COLOR', None)
+            self.env[color_mode] = '1'
+            for setting, expected in [('deploy:\n  type: missing-plugin\n', []),
+                                      ('deploy:\n  - type: local-test\n  - type: missing-plugin\n', ['local-test'])]:
+                with self.subTest(color_mode=color_mode, setting=setting):
+                    self.write_config(setting)
+                    (self.project / 'calls.jsonl').unlink(missing_ok=True)
+                    # Native Hexo logs the error, returns zero and may have run preceding deployers.
+                    result = self.run_cli('deploy')
+                    # Hexo 会给插件名着色，诊断按纯文本匹配。
+                    diagnostics = re.sub(r'\x1b\[[0-9;]*m', '', result.stderr)
+                    self.assertIn('Deployer not found: missing-plugin', diagnostics)
+                    self.assertEqual([entry['args']['type'] for entry in self.calls() if entry['phase'] == 'deploy'],
+                                     expected)
+                    self.assertFalse((self.project / 'public-default').exists())
 
     def test_multiple_registered_deployers(self):
         self.write_config('deploy:\n  - type: local-test\n  - type: second-test\n')
