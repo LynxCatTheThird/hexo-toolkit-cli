@@ -2,9 +2,11 @@
 #include <cstdlib>  // std::getenv
 #include <exception>
 #include <filesystem>  // std::filesystem
-#include <string>      // std::string
+#include <stdexcept>
+#include <string>  // std::string
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>  // std::vector
 
 #include "commands.hpp"
@@ -21,7 +23,6 @@
 
 namespace {
 
-// 函数用途：显示帮助信息
 void utilHelper() {
     std::puts(R"(HexoTool )" HEXO_TOOL_VERSION R"(
 构建、预览和部署 Hexo 博客。
@@ -58,11 +59,33 @@ bool isHexoProject(const std::filesystem::path &directory) {
            std::filesystem::is_regular_file(directory / "package.json");
 }
 
-// 函数用途：主函数
-// 参数：
-//   argc: 命令行参数个数
-//   argv: 命令行参数数组
-// 返回值：0 - 成功，1 - 失败
+// 统一解析并移除 --cwd，供项目检测和所有子命令共用同一工作目录。
+void applyHexoCwd(std::filesystem::path &projectPath, std::vector<std::string> &arguments) {
+    std::filesystem::path hexoCwd;
+    std::vector<std::string> forwarded;
+    bool positional = false;
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto &argument = arguments[index];
+        if (argument == "--") positional = true;
+        if (!positional && (argument == "--cwd" || argument.starts_with("--cwd="))) {
+            if (!hexoCwd.empty()) throw std::runtime_error("--cwd 只能指定一次");
+            if (argument == "--cwd") {
+                ++index;
+                if (index == arguments.size() || arguments[index].empty() || arguments[index].starts_with('-'))
+                    throw std::runtime_error("--cwd 缺少路径参数");
+                hexoCwd = arguments[index];
+            } else {
+                hexoCwd = argument.substr(std::string_view("--cwd=").size());
+                if (hexoCwd.empty()) throw std::runtime_error("--cwd 缺少路径参数");
+            }
+        } else {
+            forwarded.push_back(argument);
+        }
+    }
+    if (!hexoCwd.empty()) projectPath /= hexoCwd;
+    arguments = std::move(forwarded);
+}
+
 int run(int argc, char *argv[]) {
     initLogger();
     Config config;
@@ -81,7 +104,6 @@ int run(int argc, char *argv[]) {
     bool helpRequested = false;
     bool versionRequested = false;
 
-    // debug 标志应精确匹配，避免模糊匹配误触（如 --decog 触发 debug 模式）
     auto const isDebugFlag = [](std::string_view argument) {
         return argument == "--debug" || argument == "-debug" || argument == "--verbose" || argument == "-verbose" ||
                argument == "-v";
@@ -163,8 +185,15 @@ int run(int argc, char *argv[]) {
             logError("是否想输入 '{}'？", suggestion);
         return 1;
     }
-    // Relative log paths belong to the invoking directory, independently of --project.
+    // 切换项目目录前，将日志路径按启动目录转为绝对路径。
     if (!commandLogFile.empty()) commandLogFile = std::filesystem::absolute(commandLogFile);
+
+    if (!passThroughArguments.empty() && command != CommandIntent::build && command != CommandIntent::deploy &&
+        command != CommandIntent::clean && command != CommandIntent::server) {
+        logError("{} 不接受 Hexo 参数。", commandString);
+        return 1;
+    }
+    applyHexoCwd(projectPath, passThroughArguments);
 
     if (!projectPath.empty()) {
         std::error_code pathError;
@@ -188,16 +217,6 @@ int run(int argc, char *argv[]) {
     logDetail("项目 {}", workingDirectory.string());
     logDetail("配置 {} · {} · {} 个附属工具", std::filesystem::exists(configPath) ? configPath.string() : "默认配置",
               config.packageManager, config.additionalTools.size());
-
-    if (!passThroughArguments.empty() && command != CommandIntent::build && command != CommandIntent::deploy &&
-        command != CommandIntent::clean && command != CommandIntent::server) {
-        logError("{} 不接受 Hexo 参数。", commandString);
-        return 1;
-    }
-    if (hasUnsafeShellArguments(passThroughArguments)) {
-        logError("Windows 下的 Hexo 参数不能包含 cmd.exe 特殊字符（\" % & | < > ( ) ^ !）。");
-        return 1;
-    }
 
     const std::string extraArguments = joinShellArguments(passThroughArguments);
     int exitCode = 0;

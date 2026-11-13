@@ -10,17 +10,13 @@ compile_flags.txt
 
 # 编译产物
 *.o
-*.obj
 *.d
 *.out
-*.exe
 build/
 
 # 静态库与动态库
 *.a
-*.lib
 *.so
-*.dll
 
 # 测试样例
 *.out

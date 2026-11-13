@@ -2,12 +2,14 @@ cmake_minimum_required(VERSION 3.24)
 
 project(HexoTool VERSION 1.0 LANGUAGES CXX)
 
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "HexoTool only supports Linux")
+endif()
+
 # 全局设置
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-set(CMAKE_VISIBILITY_INLINES_HIDDEN YES)
 
 # 编译缓存选项
 find_program(CCACHE_PROGRAM ccache)
@@ -40,11 +42,7 @@ add_executable(${PROJECT_NAME} main.cpp)
 target_compile_definitions(${PROJECT_NAME} PRIVATE HEXO_TOOL_VERSION="${PROJECT_VERSION}")
 target_include_directories(${PROJECT_NAME} PRIVATE _includes)
 function(hexo_enable_warnings target)
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow)
-    endif()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow)
 endfunction()
 hexo_enable_warnings(${PROJECT_NAME})
 
@@ -54,10 +52,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ryml
 )
 
-if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
-endif()
-
 include(CTest)
 option(HEXO_INTEGRATION_TESTS "Test against the installed real Hexo fixture" OFF)
 if(BUILD_TESTING)
@@ -65,9 +59,6 @@ if(BUILD_TESTING)
     target_include_directories(HexoToolTests PRIVATE _includes)
     target_link_libraries(HexoToolTests PRIVATE spdlog::spdlog ryml)
     hexo_enable_warnings(HexoToolTests)
-    if(WIN32)
-        target_link_libraries(HexoToolTests PRIVATE ws2_32)
-    endif()
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME workflows COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/workflow_tests.py" $<TARGET_FILE:${PROJECT_NAME}>)
@@ -122,9 +113,4 @@ if(BUILD_TESTING)
     add_test(NAME cli_rejects_unknown_option COMMAND $<TARGET_FILE:${PROJECT_NAME}> --hel)
     set_tests_properties(cli_rejects_unknown_option PROPERTIES WILL_FAIL TRUE)
 
-    if(WIN32)
-        add_test(NAME cli_rejects_unsafe_windows_arguments
-                 COMMAND $<TARGET_FILE:${PROJECT_NAME}> build --dry-run --project "${HEXO_TEST_PROJECT}" -- "&")
-        set_tests_properties(cli_rejects_unsafe_windows_arguments PROPERTIES WILL_FAIL TRUE)
-    endif()
 endif()

@@ -87,31 +87,33 @@ if (hexo.env.cmd === 'deploy') for (const type of ['local-test', 'second-test'])
         path = self.project / 'calls.jsonl'
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
 
-    def test_valid_deployment_and_cleanup(self):
+    def test_valid_deployment_and_automatic_cleanup(self):
         self.run_cli('deploy')
         self.assertEqual([entry['phase'] for entry in self.calls()], ['generate', 'plugin', 'deploy'])
         self.assertFalse((self.project / 'public-default').exists())
 
-    def test_unconfigured_deployment_fails_and_keeps_output(self):
+    def test_unconfigured_native_deployment_cleans_on_zero_exit(self):
         for setting in ('', 'deploy: {}\n', 'deploy: []\n', 'deploy:\n  type: ""\n'):
             with self.subTest(setting=setting):
                 self.write_config(setting)
                 (self.project / 'calls.jsonl').unlink(missing_ok=True)
-                result = self.run_cli('deploy', success=False)
-                self.assertIn('No deployer configured', result.stderr)
+                # Native Hexo treats empty deployment settings as a successful no-op.
+                self.run_cli('deploy')
                 self.assertEqual([entry['phase'] for entry in self.calls()], ['generate', 'plugin'])
-                self.assertTrue((self.project / 'public-default' / 'review.txt').exists())
+                self.assertFalse((self.project / 'public-default').exists())
 
-    def test_missing_deployer_fails_before_any_deployment(self):
-        for setting in ('deploy:\n  type: missing-plugin\n',
-                        'deploy:\n  - type: local-test\n  - type: missing-plugin\n'):
+    def test_missing_deployer_preserves_diagnostics_and_cleans_on_zero_exit(self):
+        for setting, expected in [('deploy:\n  type: missing-plugin\n', []),
+                                  ('deploy:\n  - type: local-test\n  - type: missing-plugin\n', ['local-test'])]:
             with self.subTest(setting=setting):
                 self.write_config(setting)
                 (self.project / 'calls.jsonl').unlink(missing_ok=True)
-                result = self.run_cli('deploy', success=False)
+                # Native Hexo logs the error, returns zero and may have run preceding deployers.
+                result = self.run_cli('deploy')
                 self.assertIn('Deployer not found: missing-plugin', result.stderr)
-                self.assertFalse(any(entry['phase'] == 'deploy' for entry in self.calls()))
-                self.assertTrue((self.project / 'public-default' / 'review.txt').exists())
+                self.assertEqual([entry['args']['type'] for entry in self.calls() if entry['phase'] == 'deploy'],
+                                 expected)
+                self.assertFalse((self.project / 'public-default').exists())
 
     def test_multiple_registered_deployers(self):
         self.write_config('deploy:\n  - type: local-test\n  - type: second-test\n')
@@ -129,6 +131,10 @@ if (hexo.env.cmd === 'deploy') for (const type of ['local-test', 'second-test'])
         self.write_config('deploy:\n  type: missing-default-plugin\n')
         self.write_config('deploy:\n  type: local-test\n', name='site staging.yml', target='staging')
         self.write_config('deploy:\n  type: local-test\n', name='staging.yml', target='staging')
+        default_output = self.project / 'public-default'
+        default_output.mkdir()
+        marker = default_output / 'keep.txt'
+        marker.write_text('other configuration', encoding='utf-8')
         for arguments in [('--config', 'site staging.yml'), ('--config=site staging.yml',),
                           ('--config', '_config.yml,staging.yml')]:
             with self.subTest(arguments=arguments):
@@ -138,6 +144,29 @@ if (hexo.env.cmd === 'deploy') for (const type of ['local-test', 'second-test'])
                 self.assertEqual([entry['phase'] for entry in calls], ['generate', 'plugin', 'deploy'])
                 self.assertEqual({entry['target'] for entry in calls}, {'staging'})
                 self.assertEqual({entry['publicDir'] for entry in calls}, {'public-staging'})
+                self.assertFalse((self.project / 'public-staging').exists())
+                self.assertEqual(marker.read_text(encoding='utf-8'), 'other configuration')
+
+    def test_cwd_uses_target_project_plugins_and_configuration(self):
+        with tempfile.TemporaryDirectory(dir=self.temp.name, prefix='outer ') as directory:
+            outer = Path(directory)
+            (outer / '_config.yml').write_text('title: outer\n', encoding='utf-8')
+            (outer / 'package.json').write_text(json.dumps({'packageManager': 'unsupported@1'}), encoding='utf-8')
+            self.run_cli('deploy', '--project', str(outer), '--', '--cwd', os.path.relpath(self.project, outer))
+        self.assertEqual([entry['phase'] for entry in self.calls()], ['generate', 'plugin', 'deploy'])
+        self.assertFalse((self.project / 'public-default').exists())
+
+    def test_workflow_flags_fail_before_cleaning_or_deploying(self):
+        public = self.project / 'public-default'
+        public.mkdir()
+        marker = public / 'keep.txt'
+        marker.write_text('previous output', encoding='utf-8')
+        for command in ('build', 'deploy'):
+            for flag in ('--deploy', '-d', '--generate', '-g', '--watch', '-w', '--help', '-fd'):
+                with self.subTest(command=command, flag=flag):
+                    self.run_cli(command, '--', flag, success=False)
+                    self.assertEqual(self.calls(), [])
+                    self.assertEqual(marker.read_text(encoding='utf-8'), 'previous output')
 
 
 if __name__ == '__main__':

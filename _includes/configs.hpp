@@ -2,47 +2,22 @@
 
 #include <charconv>     // std::from_chars
 #include <filesystem>   // std::filesystem
+#include <initializer_list>
 #include <string>       // std::string
 #include <string_view>  // std::string_view
+#include <system_error>
+#include <utility>
 #include <vector>       // std::vector, std::pair
 
 #include "dependencies.hpp"
-#include "process.hpp"
 #include "ryml.hpp"         // IWYU pragma: keep // rapidyaml 核心
 #include "ryml_std.hpp"     // IWYU pragma: keep // rapidyaml std::string 支持
-#include "spdlog/spdlog.h"  // spdlog::warn
 
-#if defined(_WIN32)
-#include <windows.h>  // Windows API
-#elif defined(__linux__)
-#include <linux/limits.h>  // PATH_MAX
-#include <unistd.h>        // POSIX API
-#endif
-
-// 获取当前可执行文件所在目录
+// 通过 /proc 定位可执行文件，读取失败时沿用当前工作目录。
 inline std::filesystem::path getExecutableDir() {
-    static const std::filesystem::path exeDir = []() -> std::filesystem::path {
-#if defined(_WIN32)
-        wchar_t buffer[MAX_PATH + 1];
-        DWORD length = GetModuleFileNameW(NULL, buffer, MAX_PATH);
-        if (length == 0 || length >= MAX_PATH) {
-            return std::filesystem::current_path();
-        }
-        buffer[length] = L'\0';
-        return std::filesystem::path(buffer).parent_path();
-#elif defined(__linux__)
-        char buffer[PATH_MAX];
-        ssize_t const len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-        if (len != -1) {
-            buffer[len] = '\0';
-            return std::filesystem::path(buffer).parent_path();
-        }
-        return std::filesystem::current_path();
-#else
-        return std::filesystem::current_path();
-#endif
-    }();
-    return exeDir;
+    std::error_code error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    return error ? std::filesystem::current_path() : executable.parent_path();
 }
 
 template <typename Number>
@@ -60,7 +35,7 @@ struct Config {
     std::string packageManagerCommand = "npx --no-install ";
     std::string upgradeCommand = "npx --yes npm-check-updates -u && npm install";
 
-    // packageManager is authoritative; conflicting lock files are never silently guessed.
+    // 优先采用 manifest 声明；锁文件对应多个包管理器时要求明确声明。
     void detectPackageManager() {
         const auto manifest = readFileContents("package.json");
         auto tree = ryml::parse_in_arena(ryml::to_csubstr(manifest));
@@ -139,8 +114,6 @@ struct Config {
                 next.additionalTools.emplace_back(std::move(name), std::move(command));
             }
         }
-        if (root.has_child("serverStartupTimeoutSeconds"))
-            spdlog::warn("serverStartupTimeoutSeconds 已停用：服务器直接报告启动状态，不再通过端口推断");
         *this = std::move(next);
     }
 

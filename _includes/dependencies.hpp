@@ -9,10 +9,7 @@
 #include "ryml.hpp"
 #include "ryml_std.hpp"
 
-// 函数用途：一次性读取整个文件内容
-// 参数：
-//   path: 要读取的目标文件路径
-// 返回值：包含文件所有内容的 std::string，如果读取失败则返回空字符串
+// 空文件或打开失败返回空字符串，读取中途失败抛出异常。
 inline std::string readFileContents(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::in | std::ios::binary);
     if (!file) {
@@ -29,7 +26,7 @@ inline std::string readFileContents(const std::filesystem::path &path) {
     return content;
 }
 
-// Reuse the parsed manifest when checking several tools. Custom paths use the same schema.
+// 在 manifest 的依赖字段中精确匹配包名。
 inline bool isDependenciesPresent(ryml::ConstNodeRef root, std::string_view dependency) {
     if (!root.is_map()) return false;
     for (const char *sectionName : {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}) {
@@ -39,14 +36,4 @@ inline bool isDependenciesPresent(ryml::ConstNodeRef root, std::string_view depe
         }
     }
     return false;
-}
-
-inline bool isDependenciesPresent(std::string_view fileContent, std::string_view dependency) {
-    if (fileContent.empty()) return false;
-    try {
-        const auto tree = ryml::parse_in_arena(ryml::csubstr(fileContent.data(), fileContent.size()));
-        return isDependenciesPresent(tree.rootref(), dependency);
-    } catch (const std::exception &) {
-        return false;
-    }
 }

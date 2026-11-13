@@ -1,7 +1,5 @@
-#if !defined(_WIN32)
 #include <signal.h>
 #include <unistd.h>
-#endif
 
 #include <chrono>
 #include <cmath>
@@ -18,6 +16,7 @@
 #include <thread>
 
 #include "algorithms.hpp"
+#include "c4/yml/parse.hpp"
 #include "commands.hpp"
 #include "configs.hpp"
 #include "dependencies.hpp"
@@ -44,26 +43,24 @@ static int runTests() {
     check(std::abs(getJaroWinklerSimilarity("abcdef", "bcadef") - 11.0 / 12.0) < 1e-12,
           "odd mismatches preserve fractional transpositions");
 
-    check(isDependenciesPresent(R"({"dependencies":{"hexo-swpp":"1.0.0"}})", "hexo-swpp"),
-          "package.json dependency is detected");
-    check(isDependenciesPresent(R"({"devDependencies":{"hexo-swpp":"1.0.0"}})", "hexo-swpp"),
-          "package.json development dependency is detected");
-    check(!isDependenciesPresent(R"({"scripts":{"hexo-swpp":"hexo swpp"}})", "hexo-swpp"),
-          "package.json script names are not treated as dependencies");
-    check(!isDependenciesPresent(R"({"dependencies":{"hexo-swpp-extra":"1.0.0"}})", "hexo-swpp"),
-          "dependency names are matched exactly");
-    check(!isDependenciesPresent("  /hexo-swpp@1.0.0:", "hexo-swpp"),
-          "lock entries do not count as direct dependencies");
-
-    check(!hasUnsafeShellArguments({"--config", "site config.yml"}), "ordinary pass-through arguments are accepted");
-#if defined(_WIN32)
-    check(hasUnsafeShellArguments({"\" & whoami"}), "cmd metacharacters are rejected in pass-through arguments");
-#endif
+    const auto manifest = ryml::parse_in_arena(R"({
+        "dependencies": {"hexo-swpp": "1.0.0", "hexo-extra-plugin": "1.0.0"},
+        "devDependencies": {"dev-plugin": "1.0.0"},
+        "optionalDependencies": {"optional-plugin": "1.0.0"},
+        "peerDependencies": {"peer-plugin": "1.0.0"},
+        "scripts": {"script-only": "hexo swpp"},
+        "/lock-only@1.0.0": {}
+    })");
+    for (const auto *name : {"hexo-swpp", "dev-plugin", "optional-plugin", "peer-plugin"})
+        check(isDependenciesPresent(manifest.rootref(), name), "direct dependencies are detected");
+    check(!isDependenciesPresent(manifest.rootref(), "script-only"), "scripts are not dependencies");
+    check(!isDependenciesPresent(manifest.rootref(), "hexo-extra"), "dependency names are matched exactly");
+    check(!isDependenciesPresent(manifest.rootref(), "lock-only"), "lock entries are not direct dependencies");
 
     disableLoggerColor();
 
-    check(!isDependenciesPresent("[]", "hexo-swpp"), "non-object package manifests have no dependencies");
-    check(!isDependenciesPresent("{broken", "hexo-swpp"), "invalid package manifests do not abort");
+    const auto nonObject = ryml::parse_in_arena("[]");
+    check(!isDependenciesPresent(nonObject.rootref(), "hexo-swpp"), "non-object manifests have no dependencies");
     const auto originalDirectory = std::filesystem::current_path();
     const auto detectionDirectory =
         std::filesystem::temp_directory_path() /
@@ -98,26 +95,13 @@ static int runTests() {
     check(rejected && yamlConfig.similarityThreshold == 0.85, "invalid configuration is rejected atomically");
 
     double threshold = 0.0;
-    int timeout = 0;
     check(parseNumberFully("0.85", threshold) && threshold == 0.85, "valid floating-point config is parsed");
     check(!parseNumberFully("0.85invalid", threshold), "floating-point config rejects trailing characters");
-    check(parseNumberFully("30", timeout) && timeout == 30, "valid integer config is parsed");
-    check(!parseNumberFully("30s", timeout), "integer config rejects trailing characters");
 
-#if defined(_WIN32)
-    check(joinShellArguments({"--config", "site config.yml"}) == " \"--config\" \"site config.yml\"",
-          "Windows pass-through arguments are quoted");
-#else
     check(joinShellArguments({"--config", "site config.yml", "a'b"}) == " '--config' 'site config.yml' 'a'\\''b'",
           "POSIX pass-through arguments are quoted");
-#endif
 
-#if defined(_WIN32)
-    check(runCommand("exit /B 7") == 7, "Windows command exit code is propagated");
-#else
     check(runCommand("exit 7") == 7, "POSIX command exit code is propagated");
-    check(analyzeCommandOutput("npm ERR! EACCES permission denied") == "权限不足，检查目录权限或以正确用户运行",
-          "common command failures are diagnosed");
 
     const auto logPath =
         std::filesystem::temp_directory_path() /
@@ -139,31 +123,32 @@ static int runTests() {
     const auto marker =
         std::filesystem::temp_directory_path() /
         std::format("hexo-toolkit-process-test-{}", std::chrono::steady_clock::now().time_since_epoch().count());
-    auto process = ManagedProcess::start(std::format("(sleep 1; touch '{}') & wait", marker.string()));
-    check(process.has_value(), "process tree test starts");
-    if (process) {
+    ManagedProcess process;
+    const bool started = process.start(std::format("(sleep 1; touch '{}') & wait", marker.string()));
+    check(started, "process tree test starts");
+    if (started) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        process->terminate();
+        process.terminate();
         std::this_thread::sleep_for(std::chrono::milliseconds(1100));
         check(!std::filesystem::exists(marker), "terminating a command also terminates descendants");
     }
     std::error_code removeError;
     std::filesystem::remove(marker, removeError);
 
-    auto signalProcess = ManagedProcess::start("sleep 5");
-    check(signalProcess.has_value(), "signal forwarding test starts");
-    if (signalProcess) {
+    ManagedProcess signalProcess;
+    const bool signalStarted = signalProcess.start("sleep 5");
+    check(signalStarted, "signal forwarding test starts");
+    if (signalStarted) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         kill(getpid(), SIGINT);
         std::optional<int> signalExitCode;
         for (int attempts = 0; attempts < 50 && !signalExitCode.has_value(); ++attempts) {
-            signalExitCode = signalProcess->pollExitCode();
+            signalExitCode = signalProcess.pollExitCode();
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         check(signalExitCode == 128 + SIGINT, "terminal signals are forwarded with the conventional exit code");
-        check(signalProcess->wasInterruptedByTerminalSignal(), "forwarded terminal signals are recorded");
+        check(signalProcess.wasInterruptedByTerminalSignal(), "forwarded terminal signals are recorded");
     }
-#endif
 
     if (failures != 0) std::cerr << failures << " test(s) failed\n";
     return failures == 0 ? 0 : 1;

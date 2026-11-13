@@ -9,6 +9,7 @@ import time
 import signal
 import shlex
 import shutil
+import socket
 import unittest
 
 
@@ -16,6 +17,8 @@ def mock_command():
     args = sys.argv[3:]
     with open(os.environ['HEXO_TEST_CALLS'], 'a', encoding='utf-8') as calls:
         calls.write(json.dumps(args) + '\n')
+    with open(os.environ['HEXO_TEST_CWDS'], 'a', encoding='utf-8') as directories:
+        directories.write(json.dumps(str(Path.cwd())) + '\n')
     if 'server' in args:
         print('server listening on configured address', flush=True)
     if os.environ.get('HEXO_TEST_PROMPT') and 'swpp' in args:
@@ -31,9 +34,12 @@ def mock_command():
     if os.environ.get('HEXO_TEST_STDIN'):
         print('stdin=' + sys.stdin.read(), flush=True)
         print('CI=' + os.environ.get('CI', '<unset>'), flush=True)
-    if (os.environ.get('HEXO_TEST_FAIL') in args or
-            (os.environ.get('HEXO_TEST_FAIL') == 'deploy' and '--eval' in args)):
+    if os.environ.get('HEXO_TEST_FAIL') in args:
         return 7
+    if os.environ.get('HEXO_TEST_FAIL_FINAL_CLEAN') and 'clean' in args:
+        calls = Path(os.environ['HEXO_TEST_CALLS']).read_text(encoding='utf-8').splitlines()
+        if any('deploy' in json.loads(line) for line in calls):
+            return 7
     return 0
 
 
@@ -54,20 +60,16 @@ class Workflows(unittest.TestCase):
         self.manifest = {'dependencies': {'hexo-swpp': '1'}}
         self.save_manifest()
         self.calls = self.root / 'calls.jsonl'
+        self.directories = self.root / 'directories.jsonl'
         self.env = dict(os.environ, PATH=str(self.root) + os.pathsep + os.environ['PATH'],
-                        HEXO_TEST_CALLS=str(self.calls))
+                        HEXO_TEST_CALLS=str(self.calls), HEXO_TEST_CWDS=str(self.directories))
         for key in ('HEXO_TOOLKIT_DEBUG', 'HEXO_TOOLKIT_TRACE'):
             self.env.pop(key, None)
-        for manager in ('npx', 'npm', 'pnpm', 'yarn', 'git', 'node', 'formatter'):
-            if os.name == 'nt':
-                wrapper = self.root / (manager + '.cmd')
-                wrapper.write_text(f'@"{sys.executable}" "{Path(__file__).resolve()}" --mock {manager} %*\r\n')
-            else:
-                import shlex
-                wrapper = self.root / manager
-                wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' +
-                                   shlex.quote(str(Path(__file__).resolve())) + ' --mock ' + manager + ' "$@"\n')
-                wrapper.chmod(0o755)
+        for manager in ('npx', 'npm', 'pnpm', 'yarn', 'git', 'formatter'):
+            wrapper = self.root / manager
+            wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' +
+                               shlex.quote(str(Path(__file__).resolve())) + ' --mock ' + manager + ' "$@"\n')
+            wrapper.chmod(0o755)
 
     def save_manifest(self):
         (self.project / 'package.json').write_text(json.dumps(self.manifest), encoding='utf-8')
@@ -86,25 +88,30 @@ class Workflows(unittest.TestCase):
     def test_deploy_order(self):
         self.run_cli('deploy')
         calls = self.commands()
-        self.assertEqual([args[2] for args in calls[:3]], ['clean', 'generate', 'swpp'])
-        self.assertEqual(calls[3][0], '--eval')
-        self.assertEqual(calls[4][2], 'clean')
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(calls, [['--no-install', 'hexo', phase]
+                                 for phase in ('clean', 'generate', 'swpp', 'deploy', 'clean')])
+
+    def test_final_cleanup_failure_is_reported(self):
+        self.env['HEXO_TEST_FAIL_FINAL_CLEAN'] = '1'
+        result = self.run_cli('deploy', code=7)
+        self.assertEqual([args[2] for args in self.commands()], ['clean', 'generate', 'swpp', 'deploy', 'clean'])
+        self.assertIn('最终清理失败', result.stderr)
+        self.assertNotIn('✓ 部署完成', result.stderr)
 
     def test_deployment_failure_skips_final_cleanup(self):
         self.env['HEXO_TEST_FAIL'] = 'deploy'
         self.run_cli('deploy', code=7)
         self.assertEqual(len(self.commands()), 4)
-        self.assertEqual(self.commands()[-1][0], '--eval')
+        self.assertEqual(self.commands()[-1], ['--no-install', 'hexo', 'deploy'])
 
-    def test_checked_deploy_uses_package_manager_node_environment(self):
-        for manager, prefix in [('pnpm', ['exec', 'node']), ('yarn', ['node'])]:
+    def test_native_deploy_uses_selected_package_manager(self):
+        for manager, prefix in [('pnpm', ['exec']), ('yarn', ['run'])]:
             with self.subTest(manager=manager):
                 self.manifest['packageManager'] = manager + '@4.0.0'
                 self.save_manifest()
                 self.calls.unlink(missing_ok=True)
                 self.run_cli('deploy')
-                self.assertEqual(self.commands()[3][:len(prefix) + 1], prefix + ['--eval'])
+                self.assertEqual(self.commands()[3], prefix + ['hexo', 'deploy'])
 
     def test_generation_failure_stops_deploy(self):
         self.env['HEXO_TEST_FAIL'] = 'generate'
@@ -133,6 +140,18 @@ class Workflows(unittest.TestCase):
         self.assertIn('server listening', result.stderr)
         self.assertIn('child stderr', (self.root / 'server.log').read_text(encoding='utf-8'))
         self.assertFalse((self.project / 'server.log').exists())
+
+    def test_server_selects_another_port_when_default_is_occupied(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            try:
+                listener.bind(('0.0.0.0', 4000))
+            except OSError:
+                self.skipTest('port 4000 must be available for this fixture')
+            self.run_cli('server')
+        command, = self.commands()
+        self.assertEqual(command[:4], ['--no-install', 'hexo', 'server', '--port'])
+        self.assertGreater(int(command[4]), 4000)
+        self.assertLessEqual(int(command[4]), 4100)
 
     def test_server_failure_visible(self):
         self.env['HEXO_TEST_FAIL'] = 'server'
@@ -179,7 +198,7 @@ class Workflows(unittest.TestCase):
         self.run_cli('build', '--log-file', 'missing/path.log', code=1)
         self.assertFalse(self.calls.exists())
 
-    @unittest.skipUnless(os.name == 'posix' and Path('/dev/full').exists(), 'requires /dev/full')
+    @unittest.skipUnless(Path('/dev/full').exists(), 'requires /dev/full')
     def test_log_write_failure_prevents_execution(self):
         self.run_cli('build', '--log-file', '/dev/full', code=1)
         self.assertFalse(self.calls.exists())
@@ -193,17 +212,78 @@ class Workflows(unittest.TestCase):
         self.assertGreater((self.root / 'large.log').stat().st_size, 2_000_000)
 
     def test_passthrough_arguments_preserved(self):
-        self.run_cli('clean', '--', '--config', 'site config.yml', "a'b")
-        self.assertEqual(self.commands()[0][-3:], ['--config', 'site config.yml', "a'b"])
+        arguments = ['--config', 'site config.yml', "a'b", '"%&|<>()^!',
+                     '$(printf expanded)', '`printf expanded`', 'line\nbreak', '']
+        self.run_cli('clean', '--', *arguments)
+        self.assertEqual(self.commands(), [['--no-install', 'hexo', 'clean', *arguments]])
 
     def test_hexo_plugins_share_configuration_without_generation_flags(self):
         for shared in [('--config', 'site config.yml'), ('--config=site config.yml',),
-                       ('--config', 'base.yml,staging.yml'), ('--cwd', 'other blog', '--safe')]:
+                       ('--config', 'base.yml,staging.yml'), ('--safe',)]:
             with self.subTest(shared=shared):
                 self.calls.unlink(missing_ok=True)
                 self.run_cli('build', '--', *shared, '--bail')
                 self.assertEqual(self.commands()[-1], ['--no-install', 'hexo', *shared, 'swpp'])
+                self.assertEqual(self.commands()[0], ['--no-install', 'hexo', 'clean', *shared])
                 self.assertIn('--bail', self.commands()[1])
+
+    def test_cwd_selects_one_project_for_all_phases(self):
+        target = self.project / 'other blog'
+        target.mkdir()
+        (target / '_config.yml').write_text('title: target\n', encoding='utf-8')
+        (target / 'package.json').write_text(json.dumps({
+            'packageManager': 'pnpm@10.0.0', 'dependencies': {'hexo-algolia': '1'}
+        }), encoding='utf-8')
+        # The source project must not be validated or used to select packages.
+        (self.project / 'package.json').write_text('{invalid', encoding='utf-8')
+        (self.project / '_config.yml').unlink()
+        for command, phases in [('build', ['clean', 'generate', 'algolia']),
+                                ('deploy', ['clean', 'generate', 'algolia', 'deploy', 'clean']),
+                                ('clean', ['clean']), ('server', ['server'])]:
+            for cwd in [('--cwd', 'other blog'), ('--cwd=other blog',), ('--cwd', str(target))]:
+                with self.subTest(command=command, cwd=cwd):
+                    self.calls.unlink(missing_ok=True)
+                    self.directories.unlink(missing_ok=True)
+                    extra = ('--port', '5123') if command == 'server' else ()
+                    self.run_cli(command, '--', *cwd, *extra)
+                    self.assertEqual(self.commands(), [['exec', 'hexo', phase, *extra] for phase in phases])
+                    directories = [Path(json.loads(line)) for line in
+                                   self.directories.read_text(encoding='utf-8').splitlines()]
+                    self.assertEqual(directories, [target.resolve()] * len(phases))
+
+    def test_cwd_without_project_preserves_invocation_relative_log_path(self):
+        result = subprocess.run([str(BINARY), 'build', '--log-file', 'build.log', '--', '--cwd', 'blog'],
+                                cwd=self.root, env=self.env, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([args[2] for args in self.commands()], ['clean', 'generate', 'swpp'])
+        self.assertTrue((self.root / 'build.log').is_file())
+        self.assertFalse((self.project / 'build.log').exists())
+
+    def test_invalid_cwd_prevents_execution(self):
+        for args in [('--cwd',), ('--cwd=',), ('--cwd', '--safe'), ('--cwd', 'missing'),
+                     ('--cwd', '.', '--cwd=.')]:
+            with self.subTest(args=args):
+                self.run_cli('build', '--', *args, code=1)
+                self.assertFalse(self.calls.exists())
+
+    def test_workflow_control_flags_are_rejected_before_cleanup(self):
+        for command in ('build', 'deploy'):
+            for argument in ('--deploy', '--deploy=false', '--generate', '--watch', '--help',
+                             '-d', '-g', '-w', '-h', '-fd', '-dg', '-w=true', '--d', '--g', '--w', '--h'):
+                with self.subTest(command=command, argument=argument):
+                    result = self.run_cli(command, '--', argument, code=1)
+                    self.assertIn(argument, result.stderr)
+                    self.assertFalse(self.calls.exists())
+
+    def test_separate_generation_short_options_are_preserved(self):
+        self.run_cli('build', '--', '-b', '-f', '-c', '4')
+        self.assertEqual(self.commands()[0], ['--no-install', 'hexo', 'clean'])
+        self.assertEqual(self.commands()[1], ['--no-install', 'hexo', 'generate', '-b', '-f', '-c', '4'])
+
+    def test_hexo_option_terminator_preserves_positional_arguments(self):
+        self.run_cli('build', '--', '--', '--cwd', 'literal', '--deploy')
+        self.assertEqual(self.commands()[1],
+                         ['--no-install', 'hexo', 'generate', '--', '--cwd', 'literal', '--deploy'])
 
     def test_non_hexo_tools_do_not_receive_hexo_options(self):
         executable = self.root / BINARY.name
@@ -238,7 +318,6 @@ class Workflows(unittest.TestCase):
         self.assertIn('stdin=hello', result.stderr)
         self.assertIn('CI=user-value', result.stderr)
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX signals and terminal ownership')
     def test_server_ctrl_c(self):
         self.env['HEXO_TEST_WAIT'] = '1'
         process = subprocess.Popen([str(BINARY), 'server', '--project', str(self.project)],
@@ -256,7 +335,6 @@ class Workflows(unittest.TestCase):
                 process.terminate()
             process.communicate(timeout=10)
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX pseudo-terminal')
     def test_interactive_terminal_input(self):
         import pty
         import select
@@ -301,7 +379,6 @@ class Workflows(unittest.TestCase):
                 os.waitpid(pid, 0)
             os.close(descriptor)
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX pseudo-terminal')
     def test_build_plugin_prompt_is_visible(self):
         import pty
         import select
@@ -344,7 +421,7 @@ class Workflows(unittest.TestCase):
                         os.waitpid(pid, 0)
                     os.close(descriptor)
 
-    @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'requires a job-control shell')
+    @unittest.skipUnless(shutil.which('bash'), 'requires a job-control shell')
     def test_server_ctrl_z_fg_and_bg(self):
         import pty
         import select
@@ -401,7 +478,6 @@ class Workflows(unittest.TestCase):
             os.waitpid(pid, 0)
             os.close(descriptor)
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX file descriptors')
     def test_closed_standard_descriptors(self):
         def close_input_and_output():
             os.close(0)
@@ -418,6 +494,11 @@ class Workflows(unittest.TestCase):
         result = subprocess.run([str(executable), 'deploy', '--project', str(self.project)],
                                 env=self.env, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.calls.exists())
+
+    def test_invalid_manifest_prevents_execution(self):
+        (self.project / 'package.json').write_text('{broken', encoding='utf-8')
+        self.run_cli('build', code=1)
         self.assertFalse(self.calls.exists())
 
     def test_missing_option_value_prevents_execution(self):
